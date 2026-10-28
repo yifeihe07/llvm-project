@@ -36,12 +36,16 @@ struct FloatFormatSpec {
   bool isSigned = true;
   bool hasAllOnesNaN = false;
   bool isFNUZ = false;
+  /// Without a zero (unsigned, precision 1 only), exponent field 0 is a normal
+  /// binade: code c is what code c + 1 would be with a zero, 2^(c + 1 - bias).
+  bool hasZero = true;
 
   bool hasNaN() const { return hasInf || hasAllOnesNaN || isFNUZ; }
 };
 
 /// Returns the spec of `sem`, one of APFloat's semantics, which must have a
-/// zero, subnormals, an implicit integer bit and at most 64 bits (asserted).
+/// zero and subnormals (or, if unsigned with precision 1, neither), an implicit
+/// integer bit and at most 64 bits (asserted).
 FloatFormatSpec floatFormatSpecFromSemantics(const llvm::fltSemantics &sem);
 
 /// Returns floatFormatSpecFromSemantics of `floatTy`'s semantics.
@@ -67,9 +71,10 @@ Value emitNarrowFloatTrunc(ImplicitLocOpBuilder &b, Value srcBits,
                            const FloatFormatSpec &src,
                            const FloatFormatSpec &dst, RoundingMode rnd);
 
-/// Emits the exact extension of the narrow `src` to `dst` (f16, bf16, f32 or
-/// f64), which must have `src`'s precision and smallest subnormal (asserted);
-/// a value above its range gives +-Inf, and NaNs are quieted as by APFloat.
+/// Emits the exact extension of the narrow `src` (which must have a zero) to
+/// `dst` (f16, bf16, f32 or f64), which must have `src`'s precision and
+/// smallest subnormal (asserted); a value above its range gives +-Inf, and NaNs
+/// are quieted as by APFloat.
 Value emitNarrowFloatExt(ImplicitLocOpBuilder &b, Value srcBits,
                          const FloatFormatSpec &src,
                          const FloatFormatSpec &dst);

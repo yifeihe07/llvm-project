@@ -310,6 +310,143 @@ func.func @truncf_vector_bf16_to_f8E8M0FNU(%arg0 : vector<4xbf16>) -> vector<4xf
 
 // -----
 
+// A rounding mode takes the generic expansion. f32's smallest normal, 2^-126,
+// is above 2^-127 (code 0), so it is extended to f64 first: 896 is the f64
+// exponent field of 2^-127 and 2^53 - 1 the to_nearest_even addend. Without a
+// zero, the code is one below that of the same format with one, at least 0
+// (what would round to zero is 2^-127, as in APFloat); 254 is max-finite
+// (2^127), 255 the NaN.
+func.func @truncf_f32_to_f8E8M0FNU_to_nearest_even(%arg0 : f32) -> f8E8M0FNU {
+    %0 = arith.truncf %arg0 to_nearest_even : f32 to f8E8M0FNU
+    return %0 : f8E8M0FNU
+}
+// CHECK-LABEL: @truncf_f32_to_f8E8M0FNU_to_nearest_even
+// CHECK: %[[WIDE:.+]] = arith.extf %arg0 : f32 to f64
+// CHECK-NEXT: arith.bitcast %[[WIDE]] : f64 to i64
+// CHECK-DAG: arith.constant 896 : i64
+// CHECK-DAG: arith.constant 9007199254740991 : i64
+// CHECK: %[[GT:.+]] = arith.cmpi ugt, %[[C:.+]], %[[ONE:.+]] : i64
+// CHECK-NEXT: %[[ATLEAST1:.+]] = arith.select %[[GT]], %[[C]], %[[ONE]] : i64
+// CHECK-NEXT: %[[CODE:.+]] = arith.subi %[[ATLEAST1]], %[[ONE]] : i64
+// CHECK-NEXT: %[[MAX:.+]] = arith.constant 254 : i64
+// CHECK-NEXT: %[[OVF:.+]] = arith.cmpi ugt, %[[CODE]], %[[MAX]] : i64
+// CHECK-NEXT: %[[NAN:.+]] = arith.constant 255 : i64
+// CHECK-NEXT: %[[SEL:.+]] = arith.select %[[OVF]], %[[NAN]], %[[CODE]] : i64
+// CHECK-NEXT: %[[TRUNCI:.+]] = arith.trunci %[[SEL]] : i64 to i8
+// CHECK-NEXT: %[[RESULT:.+]] = arith.bitcast %[[TRUNCI]] : i8 to f8E8M0FNU
+// CHECK-NEXT: return %[[RESULT]]
+
+// -----
+
+// to_nearest_away adds 2^53; an f16 is extended to f64 too.
+func.func @truncf_f16_to_f8E8M0FNU_to_nearest_away(%arg0 : f16) -> f8E8M0FNU {
+    %0 = arith.truncf %arg0 to_nearest_away : f16 to f8E8M0FNU
+    return %0 : f8E8M0FNU
+}
+// CHECK-LABEL: @truncf_f16_to_f8E8M0FNU_to_nearest_away
+// CHECK: %[[WIDE:.+]] = arith.extf %arg0 : f16 to f64
+// CHECK-NEXT: arith.bitcast %[[WIDE]] : f64 to i64
+// CHECK: arith.constant 9007199254740992 : i64
+// CHECK: arith.constant 254 : i64
+// CHECK: arith.trunci %{{.+}} : i64 to i8
+
+// -----
+
+// toward_zero shifts without an addend; an overflow stops at max-finite, and
+// only a NaN or Inf (the f64 bits 0x7FF0000000000000 and above) gives the NaN.
+func.func @truncf_f64_to_f8E8M0FNU_toward_zero(%arg0 : f64) -> f8E8M0FNU {
+    %0 = arith.truncf %arg0 toward_zero : f64 to f8E8M0FNU
+    return %0 : f8E8M0FNU
+}
+// CHECK-LABEL: @truncf_f64_to_f8E8M0FNU_toward_zero
+// CHECK: arith.bitcast %arg0 : f64 to i64
+// CHECK-NOT: arith.extf
+// CHECK: %[[V:.+]] = arith.shli %{{.+}}, %{{.+}} : i64
+// CHECK-NEXT: %[[C54:.+]] = arith.constant 54 : i64
+// CHECK-NEXT: arith.shrui %[[V]], %[[C54]] : i64
+// CHECK: %[[GT:.+]] = arith.cmpi ugt, %[[C:.+]], %[[ONE:.+]] : i64
+// CHECK-NEXT: %[[ATLEAST1:.+]] = arith.select %[[GT]], %[[C]], %[[ONE]] : i64
+// CHECK-NEXT: %[[CODE:.+]] = arith.subi %[[ATLEAST1]], %[[ONE]] : i64
+// CHECK-NEXT: %[[MAX:.+]] = arith.constant 254 : i64
+// CHECK-NEXT: %[[LT:.+]] = arith.cmpi ult, %[[CODE]], %[[MAX]] : i64
+// CHECK-NEXT: %[[CLAMPED:.+]] = arith.select %[[LT]], %[[CODE]], %[[MAX]] : i64
+// CHECK-NEXT: %[[INF:.+]] = arith.constant 9218868437227405312 : i64
+// CHECK-NEXT: %[[ISNAN:.+]] = arith.cmpi uge, %{{.+}}, %[[INF]] : i64
+// CHECK-NEXT: %[[NAN:.+]] = arith.constant 255 : i64
+// CHECK-NEXT: arith.select %[[ISNAN]], %[[NAN]], %[[CLAMPED]] : i64
+
+// -----
+
+// The format has no sign, yet upward rounds x as APFloat does, with its sign:
+// the magnitude rounds up (2^54 - 1 added) only for x >= 0, and only then does
+// an overflow give the NaN.
+func.func @truncf_vector_f32_to_f8E8M0FNU_upward(%arg0 : vector<4xf32>)
+    -> vector<4xf8E8M0FNU> {
+    %0 = arith.truncf %arg0 upward : vector<4xf32> to vector<4xf8E8M0FNU>
+    return %0 : vector<4xf8E8M0FNU>
+}
+// CHECK-LABEL: @truncf_vector_f32_to_f8E8M0FNU_upward
+// CHECK: %[[WIDE:.+]] = arith.extf %arg0 : vector<4xf32> to vector<4xf64>
+// CHECK-NEXT: %[[BITS:.+]] = arith.bitcast %[[WIDE]] : vector<4xf64> to vector<4xi64>
+// CHECK-NEXT: %[[ZERO:.+]] = arith.constant dense<0> : vector<4xi64>
+// CHECK-NEXT: %[[UP:.+]] = arith.cmpi sge, %[[BITS]], %[[ZERO]] : vector<4xi64>
+// CHECK: %[[ALL:.+]] = arith.constant dense<18014398509481983> : vector<4xi64>
+// CHECK-NEXT: arith.select %[[UP]], %[[ALL]], %[[ZERO]] : vector<4xi1>, vector<4xi64>
+// CHECK: %[[MAX:.+]] = arith.constant dense<254> : vector<4xi64>
+// CHECK: %[[OVF:.+]] = arith.cmpi ugt, %{{.+}}, %[[MAX]] : vector<4xi64>
+// CHECK-NEXT: arith.andi %[[OVF]], %[[UP]] : vector<4xi1>
+// CHECK: arith.trunci %{{.+}} : vector<4xi64> to vector<4xi8>
+
+// -----
+
+// downward rounds the magnitude up for x < 0; such an overflow would be a
+// negative NaN, which the format lacks (APFloat asserts), so it saturates.
+func.func @truncf_f64_to_f8E8M0FNU_downward(%arg0 : f64) -> f8E8M0FNU {
+    %0 = arith.truncf %arg0 downward : f64 to f8E8M0FNU
+    return %0 : f8E8M0FNU
+}
+// CHECK-LABEL: @truncf_f64_to_f8E8M0FNU_downward
+// CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f64 to i64
+// CHECK-NEXT: %[[ZERO:.+]] = arith.constant 0 : i64
+// CHECK-NEXT: %[[UP:.+]] = arith.cmpi slt, %[[BITS]], %[[ZERO]] : i64
+// CHECK: arith.select %[[UP]], %{{.+}}, %[[ZERO]] : i64
+// CHECK: %[[GT:.+]] = arith.cmpi ugt, %[[C:.+]], %[[ONE:.+]] : i64
+// CHECK-NEXT: %[[ATLEAST1:.+]] = arith.select %[[GT]], %[[C]], %[[ONE]] : i64
+// CHECK-NEXT: %[[CODE:.+]] = arith.subi %[[ATLEAST1]], %[[ONE]] : i64
+// CHECK-NEXT: %[[MAX:.+]] = arith.constant 254 : i64
+// CHECK-NEXT: %[[LT:.+]] = arith.cmpi ult, %[[CODE]], %[[MAX]] : i64
+// CHECK-NEXT: %[[CLAMPED:.+]] = arith.select %[[LT]], %[[CODE]], %[[MAX]] : i64
+// CHECK-NEXT: %[[INF:.+]] = arith.constant 9218868437227405312 : i64
+// CHECK-NEXT: %[[ISNAN:.+]] = arith.cmpi uge, %{{.+}}, %[[INF]] : i64
+// CHECK-NEXT: %[[NAN:.+]] = arith.constant 255 : i64
+// CHECK-NEXT: arith.select %[[ISNAN]], %[[NAN]], %[[CLAMPED]] : i64
+
+// -----
+
+// Without a mode, a source wider than f32 rounds toward zero once, from its
+// own bits (an f128 rounded to odd into f64 first), like the exponent of an
+// f32 value.
+func.func @truncf_wide_to_f8E8M0FNU(%arg0 : f64, %arg1 : f128)
+    -> (f8E8M0FNU, f8E8M0FNU) {
+    %0 = arith.truncf %arg0 : f64 to f8E8M0FNU
+    %1 = arith.truncf %arg1 : f128 to f8E8M0FNU
+    return %0, %1 : f8E8M0FNU, f8E8M0FNU
+}
+// CHECK-LABEL: @truncf_wide_to_f8E8M0FNU
+// CHECK-NOT: arith.truncf %arg0
+// CHECK: arith.bitcast %arg0 : f64 to i64
+// CHECK: %[[V:.+]] = arith.shli %{{.+}}, %{{.+}} : i64
+// CHECK-NEXT: %[[C54:.+]] = arith.constant 54 : i64
+// CHECK-NEXT: arith.shrui %[[V]], %[[C54]] : i64
+// CHECK: arith.constant 9218868437227405312 : i64
+// CHECK: %[[R0:.+]] = arith.bitcast %{{.+}} : i8 to f8E8M0FNU
+// CHECK: %[[R:.+]] = arith.truncf %arg1 : f128 to f64
+// CHECK-NEXT: arith.extf %[[R]] : f64 to f128
+// CHECK: %[[R1:.+]] = arith.bitcast %{{.+}} : i8 to f8E8M0FNU
+// CHECK-NEXT: return %[[R0]], %[[R1]]
+
+// -----
+
 func.func @scaling_truncf_f32_to_f4E2M1FN(%arg0 : f32, %arg1: f8E8M0FNU) -> f4E2M1FN {
     %0 = arith.scaling_truncf %arg0, %arg1 : f32, f8E8M0FNU to f4E2M1FN
     return %0 : f4E2M1FN

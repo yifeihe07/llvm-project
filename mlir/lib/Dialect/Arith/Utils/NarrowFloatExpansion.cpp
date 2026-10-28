@@ -94,8 +94,13 @@ static Type checkCarrierType(Value srcBits, const arith::FloatFormatSpec &src,
 
 arith::FloatFormatSpec
 mlir::arith::floatFormatSpecFromSemantics(const llvm::fltSemantics &sem) {
-  assert(sem.hasZero && sem.hasDenormals &&
-         "the format needs a zero and subnormals (f8E8M0FNU has neither)");
+  // A format without a zero must be unsigned: APFloat makes any zero result
+  // there the positive smallest value, whatever the input's sign.
+  assert(sem.hasZero == sem.hasDenormals &&
+         (sem.hasZero || (!sem.hasSignedRepr &&
+                          llvm::APFloat::semanticsPrecision(sem) == 1)) &&
+         "the format needs a zero and subnormals, or neither, no sign and "
+         "precision 1");
   assert(!sem.hasExplicitIntegerBit && "the integer bit must be implicit");
   FloatFormatSpec spec;
   spec.sizeInBits = llvm::APFloat::semanticsSizeInBits(sem);
@@ -118,6 +123,7 @@ mlir::arith::floatFormatSpecFromSemantics(const llvm::fltSemantics &sem) {
       nanOnly && sem.nanEncoding == llvm::fltNanEncoding::AllOnes;
   spec.isFNUZ =
       nanOnly && sem.nanEncoding == llvm::fltNanEncoding::NegativeZero;
+  spec.hasZero = sem.hasZero;
   spec.maxFiniteBitsAbs =
       llvm::APFloat::getLargest(sem).bitcastToAPInt().getZExtValue();
   // getNaN asserts on a format without a NaN.
@@ -281,7 +287,15 @@ Value mlir::arith::emitNarrowFloatTrunc(ImplicitLocOpBuilder &b, Value srcBits,
     }
     Value v = bb.shli(sig, shift);
     Value rounded = roundAt(v, roundShift);
-    code = bb.addi(rounded, bb.shli(hi, dstMantBits));
+    Value hiBits = dstMantBits ? bb.shli(hi, dstMantBits) : hi;
+    code = bb.addi(rounded, hiBits);
+    // Without a zero, codes are one lower (see FloatFormatSpec::hasZero), and
+    // code 0, the smallest value, takes what would round to zero (as APFloat).
+    if (!dst.hasZero) {
+      Value oneV = getOne();
+      Value atLeastOne = bb.maxui(code, oneV);
+      code = bb.subi(atLeastOne, oneV);
+    }
   }
 
   // Resolve codes above maxFinite into `clamped` and, if set, `isNaNResult`.
@@ -492,6 +506,7 @@ Value mlir::arith::emitNarrowFloatExt(ImplicitLocOpBuilder &b, Value srcBits,
          "the destination must be an IEEE f16, bf16, f32 or f64");
   assert(dst.mantBits >= src.mantBits &&
          "the destination needs at least the source's mantissa bits");
+  assert(src.hasZero && "the source needs a zero and subnormals");
   BitsBuilder bb(b, checkCarrierType(srcBits, src, dst));
   const int ms = src.mantBits, md = dst.mantBits;
   const unsigned magBits = src.expBits + ms;
