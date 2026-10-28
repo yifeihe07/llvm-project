@@ -756,7 +756,8 @@ struct F8E8M0TruncFOpConverter : public OpRewritePattern<arith::TruncFOp> {
     Type f32Ty = cloneToShapedType(operandTy, b.getF32Type());
 
     if (operandETy.getIntOrFloatBitWidth() < 32) {
-      operand = arith::ExtFOp::create(b, f32Ty, operand, op.getFastmathAttr());
+      operand = arith::ExtFOp::create(
+          b, f32Ty, operand, getNNaNOnly(b.getContext(), op.getFastmathAttr()));
     } else if (operandETy.getIntOrFloatBitWidth() > 32) {
       operand = arith::TruncFOp::create(
           b, f32Ty, operand, op.getRoundingmodeAttr(), op.getFastmathAttr());
