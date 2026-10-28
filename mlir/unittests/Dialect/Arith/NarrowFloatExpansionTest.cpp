@@ -64,6 +64,7 @@ const FormatRow kFormats[] = {
     {"f4E2M1FN", 4, 1, 2, 1, true, NoNaN, 0x7, 0x7},
     {"f16", 16, 10, 5, 15, true, IEEENaN, 0x7BFF, 0x7E00},
     {"bf16", 16, 7, 8, 127, true, IEEENaN, 0x7F7F, 0x7FC0},
+    {"tf32", 19, 10, 8, 127, true, IEEENaN, 0x3FBFF, 0x3FE00},
     {"f32", 32, 23, 8, 127, true, IEEENaN, 0x7F7FFFFF, 0x7FC00000},
     {"f64", 64, 52, 11, 1023, true, IEEENaN, 0x7FEFFFFFFFFFFFFF,
      0x7FF8000000000000},
@@ -97,6 +98,48 @@ TEST(FloatFormatSpecTest, BuiltinFloatTypes) {
     expectSpecMatches(arith::floatFormatSpecFromFloatType(type), row);
     expectSpecMatches(
         arith::floatFormatSpecFromSemantics(type.getFloatSemantics()), row);
+  }
+}
+
+// Apart from each signed IEEE format with itself, only f8E5M2 / f16 and any
+// two of bf16 / tf32 / f32 share an exponent layout; f8E5M2FNUZ has f16's
+// exponent width but bias 16 and no Inf, and f8E5M3FNU has no sign.
+TEST(FloatFormatSpecTest, SameExponentLayout) {
+  MLIRContext ctx;
+  auto specOf = [&](StringRef name) {
+    return arith::floatFormatSpecFromFloatType(
+        cast<FloatType>(parseType(name, &ctx)));
+  };
+  auto isPair = [](StringRef a, StringRef b, StringRef x, StringRef y) {
+    return (a == x && b == y) || (a == y && b == x);
+  };
+  for (const FormatRow &a : kFormats) {
+    for (const FormatRow &b : kFormats) {
+      SCOPED_TRACE(testing::Message() << a.name << " and " << b.name);
+      bool expected = (StringRef(a.name) == b.name && a.nanFamily == IEEENaN) ||
+                      isPair(a.name, b.name, "f8E5M2", "f16") ||
+                      isPair(a.name, b.name, "bf16", "tf32") ||
+                      isPair(a.name, b.name, "bf16", "f32") ||
+                      isPair(a.name, b.name, "tf32", "f32");
+      EXPECT_EQ(arith::haveSameExponentLayout(specOf(a.name), specOf(b.name)),
+                expected);
+    }
+  }
+
+  // Among the builtin formats only Inf separates a pair on its own (f8E4M3 and
+  // f8E4M3FN); no two differ only in bias, say. So each condition is also
+  // checked alone, on a copy of f16's spec with that property changed.
+  const arith::FloatFormatSpec f16 = specOf("f16");
+  arith::FloatFormatSpec otherBias = f16, otherExpBits = f16, noInf = f16,
+                         noSign = f16;
+  otherBias.bias += 1;
+  otherExpBits.expBits += 1;
+  noInf.hasInf = false;
+  noSign.isSigned = false;
+  for (const arith::FloatFormatSpec &other :
+       {otherBias, otherExpBits, noInf, noSign}) {
+    EXPECT_FALSE(arith::haveSameExponentLayout(f16, other));
+    EXPECT_FALSE(arith::haveSameExponentLayout(other, f16));
   }
 }
 
@@ -338,21 +381,17 @@ TEST(NarrowFloatExpansionTest, UnsignedFoldedValuesMatchAPFloat) {
                              populate);
 }
 
-// A signed format, negative inputs included: ties at 1.0625 and at -2^-10
-// (half the smallest subnormal), -448 (max-finite) and -464 (the tie above
-// it), a negative overflow, -Inf and -0.
+// A signed format through its per-format populate function, negative inputs
+// included: ties at 1.0625 and at -2^-10 (half the smallest subnormal), -448
+// (max-finite) and -464 (the tie above it), a negative overflow, -Inf and -0.
 TEST(NarrowFloatExpansionTest, SignedFoldedValuesMatchAPFloat) {
   MLIRContext ctx;
   ctx.loadDialect<arith::ArithDialect, func::FuncDialect>();
   const uint32_t inputs[] = {0x3F880000, 0xBF880008, 0x3B000000, 0xBA800000,
                              0xC3E00000, 0xC3E80000, 0xC9742400, 0xFF800000,
                              0x80000000, 0xFFC00000};
-  auto populate = [](RewritePatternSet &p) {
-    arith::populateExpandNarrowFloatPatterns(p,
-                                             TypeID::get<Float8E4M3FNType>());
-  };
   expectFoldedMatchesAPFloat(ctx, Float8E4M3FNType::get(&ctx), inputs,
-                             populate);
+                             arith::populateExpandF8E4M3FNPatterns);
 }
 
 // A truncf from f128 or f80 rounds to odd into f64 first. The inputs are ones

@@ -656,20 +656,25 @@ func.func @extf_f8E5M2_to_f32(%arg0 : f8E5M2) -> f32 {
     return %0 : f32
 }
 
+// f8E5M2 has f16's exponent layout: the code is shifted into an f16, which one
+// exact arith.extf takes to f32.
 // CHECK-LABEL: @extf_f8E5M2_to_f32
 // CHECK-SAME: %[[ARG0:.+]]: f8E5M2
 // CHECK: %[[BITCAST:.+]] = arith.bitcast %[[ARG0]] : f8E5M2 to i8
-// CHECK: %[[EXTUI:.+]] = arith.extui %[[BITCAST]] : i8 to i16
-// CHECK: %[[C8:.+]] = arith.constant 8 : i16
-// CHECK: %[[SHL:.+]] = arith.shli %[[EXTUI]], %[[C8]] : i16
-// CHECK: %[[F16:.+]] = arith.bitcast %[[SHL]] : i16 to f16
-// CHECK: %[[RESULT:.+]] = arith.extf %[[F16]] : f16 to f32
+// CHECK: %[[EXTUI:.+]] = arith.extui %[[BITCAST]] : i8 to i32
+// CHECK-NOT: arith.extf
+// CHECK: %[[C8:.+]] = arith.constant 8 : i32
+// CHECK: arith.shli %{{.+}}, %[[C8]] : i32
+// CHECK-NOT: arith.extf
+// CHECK: %[[BITS:.+]] = arith.trunci %{{.+}} : i32 to i16
+// CHECK: %[[HALF:.+]] = arith.bitcast %[[BITS]] : i16 to f16
+// CHECK: %[[RESULT:.+]] = arith.extf %[[HALF]] : f16 to f32
 // CHECK: return %[[RESULT]]
 
 // -----
 
-// The F16 result matches the F8E5M2 pivot type, so no trailing extf/truncf is
-// emitted.
+// f8E5M2 is the high byte of an f16, so the decode is a shift by 8; a NaN also
+// gets the quiet bit.
 func.func @extf_f8E5M2_to_f16(%arg0 : f8E5M2) -> f16 {
     %0 = arith.extf %arg0 : f8E5M2 to f16
     return %0 : f16
@@ -677,11 +682,15 @@ func.func @extf_f8E5M2_to_f16(%arg0 : f8E5M2) -> f16 {
 
 // CHECK-LABEL: @extf_f8E5M2_to_f16
 // CHECK: %[[BITCAST:.+]] = arith.bitcast %arg0 : f8E5M2 to i8
-// CHECK: %[[EXTUI:.+]] = arith.extui %[[BITCAST]] : i8 to i16
-// CHECK: %[[C8:.+]] = arith.constant 8 : i16
-// CHECK: %[[SHL:.+]] = arith.shli %[[EXTUI]], %[[C8]] : i16
-// CHECK: %[[RESULT:.+]] = arith.bitcast %[[SHL]] : i16 to f16
+// CHECK: %[[EXTUI:.+]] = arith.extui %[[BITCAST]] : i8 to i32
 // CHECK-NOT: arith.extf
+// CHECK: %[[C8:.+]] = arith.constant 8 : i32
+// CHECK: %[[SHIFTED:.+]] = arith.shli %{{.+}}, %[[C8]] : i32
+// CHECK: %[[QUIET:.+]] = arith.ori %[[SHIFTED]], %{{.+}} : i32
+// CHECK: %[[CODE:.+]] = arith.select %{{.+}}, %[[QUIET]], %[[SHIFTED]] : i32
+// CHECK-NOT: arith.extf
+// CHECK: %[[BITS:.+]] = arith.trunci %[[CODE]] : i32 to i16
+// CHECK: %[[RESULT:.+]] = arith.bitcast %[[BITS]] : i16 to f16
 // CHECK: return %[[RESULT]]
 
 // -----
@@ -693,7 +702,11 @@ func.func @extf_vector_f8E5M2_to_f32(%arg0 : vector<4xf8E5M2>) -> vector<4xf32> 
 
 // CHECK-LABEL: @extf_vector_f8E5M2_to_f32
 // CHECK: arith.bitcast %arg0 : vector<4xf8E5M2> to vector<4xi8>
-// CHECK: arith.extf %{{.+}} : vector<4xf16> to vector<4xf32>
+// CHECK: arith.extui %{{.+}} : vector<4xi8> to vector<4xi32>
+// CHECK-NOT: arith.extf
+// CHECK: arith.trunci %{{.+}} : vector<4xi32> to vector<4xi16>
+// CHECK: %[[HALF:.+]] = arith.bitcast %{{.+}} : vector<4xi16> to vector<4xf16>
+// CHECK: arith.extf %[[HALF]] : vector<4xf16> to vector<4xf32>
 // CHECK: return
 
 // -----
@@ -704,36 +717,37 @@ func.func @truncf_f32_to_f8E5M2(%arg0 : f32) -> f8E5M2 {
 }
 
 // CHECK-LABEL: @truncf_f32_to_f8E5M2
-// CHECK: %[[H16:.+]] = arith.truncf %arg0 : f32 to f16
-// CHECK: %[[ISNAN:.+]] = arith.cmpf une, %[[H16]], %[[H16]] : f16
-// CHECK: %[[BITS:.+]] = arith.bitcast %[[H16]] : f16 to i16
-// CHECK: %[[C7F:.+]] = arith.constant 127 : i16
-// CHECK: %[[C8:.+]] = arith.constant 8 : i16
-// CHECK: %[[C1:.+]] = arith.constant 1 : i16
-// CHECK: %[[SHR:.+]] = arith.shrui %[[BITS]], %[[C8]] : i16
-// CHECK: %[[BIT8:.+]] = arith.andi %[[SHR]], %[[C1]] : i16
-// CHECK: %[[BIAS:.+]] = arith.addi %[[BIT8]], %[[C7F]] : i16
-// CHECK: %[[BIASED:.+]] = arith.addi %[[BITS]], %[[BIAS]] : i16
-// CHECK: %[[BSHIFT:.+]] = arith.shrui %[[BIASED]], %[[C8]] : i16
-// CHECK: %[[NORMAL:.+]] = arith.trunci %[[BSHIFT]] : i16 to i8
-// CHECK: %[[CNAN:.+]] = arith.constant 126 : i8
-// CHECK: %[[SEL:.+]] = arith.select %[[ISNAN]], %[[CNAN]], %[[NORMAL]] : i8
-// CHECK: %[[RESULT:.+]] = arith.bitcast %[[SEL]] : i8 to f8E5M2
+// CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f32 to i32
+// CHECK-NOT: arith.truncf
+// One rounding from the f32 bits; an overflow gives the Inf code 124 (0x7C).
+// CHECK: arith.constant 124 : i32
+// CHECK-NOT: arith.truncf
+// CHECK: %[[CODE:.+]] = arith.trunci %{{.+}} : i32 to i8
+// CHECK: %[[RESULT:.+]] = arith.bitcast %[[CODE]] : i8 to f8E5M2
 // CHECK: return %[[RESULT]]
 
 // -----
 
-// The F16 operand matches the F8E5M2 pivot type, so no leading truncf to F16 is
-// emitted.
 func.func @truncf_f16_to_f8E5M2(%arg0 : f16) -> f8E5M2 {
     %0 = arith.truncf %arg0 : f16 to f8E5M2
     return %0 : f8E5M2
 }
 
+// f16 and f8E5M2 share the exponent layout: the f16 magnitude is rounded at bit
+// 8 (127 plus the kept LSB), with no exponent split and no clamp.
 // CHECK-LABEL: @truncf_f16_to_f8E5M2
 // CHECK-NOT: arith.truncf
-// CHECK: %[[ISNAN:.+]] = arith.cmpf une, %arg0, %arg0 : f16
 // CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f16 to i16
+// CHECK: %[[SRC:.+]] = arith.extui %[[BITS]] : i16 to i32
+// CHECK: %[[MAG:.+]] = arith.andi %[[SRC]], %{{.+}} : i32
+// CHECK-NOT: arith.minui
+// CHECK: %[[C127:.+]] = arith.constant 127 : i32
+// CHECK: %[[BIASED:.+]] = arith.addi %[[MAG]], %[[C127]] : i32
+// CHECK: %[[UP:.+]] = arith.addi %[[BIASED]], %{{.+}} : i32
+// CHECK: %[[CODE:.+]] = arith.shrui %[[UP]], %{{.+}} : i32
+// CHECK-NOT: arith.minui
+// CHECK: arith.ori %[[CODE]], %{{.+}} : i32
+// CHECK-NOT: arith.truncf
 // CHECK: %[[RESULT:.+]] = arith.bitcast %{{.+}} : i8 to f8E5M2
 // CHECK: return %[[RESULT]]
 
@@ -745,7 +759,8 @@ func.func @truncf_vector_f32_to_f8E5M2(%arg0 : vector<4xf32>) -> vector<4xf8E5M2
 }
 
 // CHECK-LABEL: @truncf_vector_f32_to_f8E5M2
-// CHECK: arith.truncf %arg0 : vector<4xf32> to vector<4xf16>
+// CHECK: arith.bitcast %arg0 : vector<4xf32> to vector<4xi32>
+// CHECK-NOT: arith.truncf
 // CHECK: arith.bitcast %{{.+}} : vector<4xi8> to vector<4xf8E5M2>
 // CHECK: return
 
@@ -758,34 +773,16 @@ func.func @extf_f8E4M3FN_to_f32(%arg0 : f8E4M3FN) -> f32 {
 
 // CHECK-LABEL: @extf_f8E4M3FN_to_f32
 // CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f8E4M3FN to i8
-// CHECK: %[[C7F:.+]] = arith.constant 127 : i8
-// CHECK: %[[MAG8:.+]] = arith.andi %[[BITS]], %[[C7F]] : i8
-// CHECK: %[[MAG16:.+]] = arith.extui %[[MAG8]] : i8 to i16
-// CHECK: %[[C7:.+]] = arith.constant 7 : i16
-// CHECK: %[[G16BITS:.+]] = arith.shli %[[MAG16]], %[[C7]] : i16
-// CHECK: %[[G16:.+]] = arith.bitcast %[[G16BITS]] : i16 to f16
-// CHECK: %[[GF32:.+]] = arith.extf %[[G16]] : f16 to f32
-// CHECK: %[[C256:.+]] = arith.constant 2.560000e+02 : f32
-// CHECK: %[[MAGF32:.+]] = arith.mulf %[[GF32]], %[[C256]] : f32
-// CHECK: %[[MAGI32:.+]] = arith.bitcast %[[MAGF32]] : f32 to i32
-// CHECK: %[[C80:.+]] = arith.constant -128 : i8
-// CHECK: %[[SIGN8:.+]] = arith.andi %[[BITS]], %[[C80]] : i8
-// CHECK: %[[SIGN32:.+]] = arith.extui %[[SIGN8]] : i8 to i32
-// CHECK: %[[C24:.+]] = arith.constant 24 : i32
-// CHECK: %[[SIGNBIT:.+]] = arith.shli %[[SIGN32]], %[[C24]] : i32
-// CHECK: %[[SIGNED:.+]] = arith.ori %[[MAGI32]], %[[SIGNBIT]] : i32
-// CHECK: %[[SIGNEDF32:.+]] = arith.bitcast %[[SIGNED]] : i32 to f32
-// CHECK: %[[ISNAN:.+]] = arith.cmpi eq, %[[MAG8]], %[[C7F]] : i8
+// CHECK: %[[EXT:.+]] = arith.extui %[[BITS]] : i8 to i32
+// CHECK-NOT: arith.extf
+// The NaN 0x7F / 0xFF keeps its sign and payload under the quiet NaN.
 // CHECK: %[[CNAN:.+]] = arith.constant 2143289344 : i32
-// CHECK: %[[NANSIGNED:.+]] = arith.ori %[[CNAN]], %[[SIGNBIT]] : i32
-// CHECK: %[[NANF32:.+]] = arith.bitcast %[[NANSIGNED]] : i32 to f32
-// CHECK: %[[RESULT:.+]] = arith.select %[[ISNAN]], %[[NANF32]], %[[SIGNEDF32]] : f32
+// CHECK-NOT: arith.extf
+// CHECK: %[[RESULT:.+]] = arith.bitcast %{{.+}} : i32 to f32
 // CHECK: return %[[RESULT]]
 
 // -----
 
-// The F16 result is narrower than the F32 pivot, so a trailing truncf to F16 is
-// emitted.
 func.func @extf_f8E4M3FN_to_f16(%arg0 : f8E4M3FN) -> f16 {
     %0 = arith.extf %arg0 : f8E4M3FN to f16
     return %0 : f16
@@ -793,8 +790,10 @@ func.func @extf_f8E4M3FN_to_f16(%arg0 : f8E4M3FN) -> f16 {
 
 // CHECK-LABEL: @extf_f8E4M3FN_to_f16
 // CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f8E4M3FN to i8
-// CHECK: %[[SEL:.+]] = arith.select %{{.+}}, %{{.+}}, %{{.+}} : f32
-// CHECK: %[[RESULT:.+]] = arith.truncf %[[SEL]] : f32 to f16
+// CHECK: arith.extui %[[BITS]] : i8 to i32
+// CHECK-NOT: arith.truncf
+// CHECK: %[[HALF:.+]] = arith.trunci %{{.+}} : i32 to i16
+// CHECK: %[[RESULT:.+]] = arith.bitcast %[[HALF]] : i16 to f16
 // CHECK: return %[[RESULT]]
 
 // -----
@@ -806,7 +805,8 @@ func.func @extf_vector_f8E4M3FN_to_f32(%arg0 : vector<4xf8E4M3FN>) -> vector<4xf
 
 // CHECK-LABEL: @extf_vector_f8E4M3FN_to_f32
 // CHECK: arith.bitcast %arg0 : vector<4xf8E4M3FN> to vector<4xi8>
-// CHECK: arith.mulf
+// CHECK-NOT: arith.extf
+// CHECK: arith.bitcast %{{.+}} : vector<4xi32> to vector<4xf32>
 // CHECK: return
 
 // -----
@@ -817,46 +817,14 @@ func.func @truncf_f32_to_f8E4M3FN(%arg0 : f32) -> f8E4M3FN {
 }
 
 // CHECK-LABEL: @truncf_f32_to_f8E4M3FN
-// CHECK: %[[ISNAN:.+]] = arith.cmpf une, %arg0, %arg0 : f32
 // CHECK: %[[BITS:.+]] = arith.bitcast %arg0 : f32 to i32
-// CHECK: %[[CSIGN:.+]] = arith.constant -2147483648 : i32
-// CHECK: %[[CABS:.+]] = arith.constant 2147483647 : i32
-// CHECK: %[[SIGNBITS:.+]] = arith.andi %[[BITS]], %[[CSIGN]] : i32
-// CHECK: %[[ABSBITS:.+]] = arith.andi %[[BITS]], %[[CABS]] : i32
-// CHECK: %[[ABSF32:.+]] = arith.bitcast %[[ABSBITS]] : i32 to f32
-// F8E4M3FN has no infinity, so an overflowing/infinite magnitude maps to NaN.
-// CHECK: %[[COVF:.+]] = arith.constant 4.640000e+02 : f32
-// CHECK: %[[ISOVF:.+]] = arith.cmpf ogt, %[[ABSF32]], %[[COVF]] : f32
-// CHECK: %[[CMAX:.+]] = arith.constant 4.480000e+02 : f32
-// The clamp to the maximum magnitude is emitted as arith.minnumf, which the
-// include-min-max-f flag further lowers to cmpf/select.
-// CHECK: %[[LT:.+]] = arith.cmpf ult, %[[ABSF32]], %[[CMAX]] : f32
-// CHECK: %[[MIN:.+]] = arith.select %[[LT]], %[[ABSF32]], %[[CMAX]] : f32
-// CHECK: %[[UNO:.+]] = arith.cmpf uno, %[[ABSF32]], %[[ABSF32]] : f32
-// CHECK: %[[CLAMPED:.+]] = arith.select %[[UNO]], %[[CMAX]], %[[MIN]] : f32
-// CHECK: %[[CINV:.+]] = arith.constant 3.906250e-03 : f32
-// CHECK: %[[SCALED:.+]] = arith.mulf %[[CLAMPED]], %[[CINV]] : f32
-// CHECK: %[[H16:.+]] = arith.truncf %[[SCALED]] : f32 to f16
-// CHECK: %[[H16BITS:.+]] = arith.bitcast %[[H16]] : f16 to i16
-// CHECK: %[[C3F:.+]] = arith.constant 63 : i16
-// CHECK: %[[C7:.+]] = arith.constant 7 : i16
-// CHECK: %[[C1:.+]] = arith.constant 1 : i16
-// CHECK: %[[SHR:.+]] = arith.shrui %[[H16BITS]], %[[C7]] : i16
-// CHECK: %[[BIT7:.+]] = arith.andi %[[SHR]], %[[C1]] : i16
-// CHECK: %[[BIAS:.+]] = arith.addi %[[BIT7]], %[[C3F]] : i16
-// CHECK: %[[BIASED:.+]] = arith.addi %[[H16BITS]], %[[BIAS]] : i16
-// CHECK: %[[SHIFTED:.+]] = arith.shrui %[[BIASED]], %[[C7]] : i16
-// CHECK: %[[MAG8:.+]] = arith.trunci %[[SHIFTED]] : i16 to i8
-// CHECK: %[[C7F8:.+]] = arith.constant 127 : i8
-// CHECK: %[[MAGMASK:.+]] = arith.andi %[[MAG8]], %[[C7F8]] : i8
-// CHECK: %[[C24:.+]] = arith.constant 24 : i32
-// CHECK: %[[SIGNSHR:.+]] = arith.shrui %[[SIGNBITS]], %[[C24]] : i32
-// CHECK: %[[SIGN8:.+]] = arith.trunci %[[SIGNSHR]] : i32 to i8
-// CHECK: %[[RES8:.+]] = arith.ori %[[MAGMASK]], %[[SIGN8]] : i8
-// CHECK: %[[NANOVF:.+]] = arith.ori %[[ISNAN]], %[[ISOVF]] : i1
-// CHECK: %[[CNAN:.+]] = arith.constant 127 : i8
-// CHECK: %[[RES:.+]] = arith.select %[[NANOVF]], %[[CNAN]], %[[RES8]] : i8
-// CHECK: %[[RESULT:.+]] = arith.bitcast %[[RES]] : i8 to f8E4M3FN
+// CHECK-NOT: arith.truncf
+// F8E4M3FN has no infinity, so an overflowing/infinite magnitude maps to NaN:
+// a code above the max-finite 126 (448.0) is replaced by the NaN 127.
+// CHECK: arith.constant 126 : i32
+// CHECK-NOT: arith.truncf
+// CHECK: %[[CODE:.+]] = arith.trunci %{{.+}} : i32 to i8
+// CHECK: %[[RESULT:.+]] = arith.bitcast %[[CODE]] : i8 to f8E4M3FN
 // CHECK: return %[[RESULT]]
 
 // -----
@@ -867,6 +835,6 @@ func.func @truncf_vector_f32_to_f8E4M3FN(%arg0 : vector<4xf32>) -> vector<4xf8E4
 }
 
 // CHECK-LABEL: @truncf_vector_f32_to_f8E4M3FN
-// CHECK: arith.constant dense<4.480000e+02> : vector<4xf32>
+// CHECK: arith.constant dense<126> : vector<4xi32>
 // CHECK: arith.bitcast %{{.+}} : vector<4xi8> to vector<4xf8E4M3FN>
 // CHECK: return

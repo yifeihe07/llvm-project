@@ -47,6 +47,10 @@ FloatFormatSpec floatFormatSpecFromSemantics(const llvm::fltSemantics &sem);
 /// Returns floatFormatSpecFromSemantics of `floatTy`'s semantics.
 FloatFormatSpec floatFormatSpecFromFloatType(FloatType floatTy);
 
+/// Whether `a` and `b` are signed IEEE-encoded formats with the same exponent
+/// width and bias (e.g. f8E5M2 and f16), so the encodings differ by a shift.
+bool haveSameExponentLayout(const FloatFormatSpec &a, const FloatFormatSpec &b);
+
 // Both emitters take a carrier `srcBits` of i32 or i64 (or a static or scalable
 // shaped type of it) with the source encoding in its low bits, higher bits
 // ignored, and return the destination encoding zero-extended in the same type.

@@ -2,9 +2,11 @@
 // from an independent model of APFloat::convert (formats without Inf or NaN
 // saturate); inputs are runtime arguments, so nothing is constant folded.
 
-// RUN: mlir-opt %s --arith-expand="include-f6e2m3fn=true include-f6e3m2fn=true \
-// RUN:     include-f8e3m4=true include-f8e4m3=true include-f8e4m3b11fnuz=true \
-// RUN:     include-f8e4m3fnuz=true include-f8e5m2fnuz=true" \
+// RUN: mlir-opt %s --arith-expand="include-f4e2m1=true include-f6e2m3fn=true \
+// RUN:     include-f6e3m2fn=true include-f8e3m4=true include-f8e4m3=true \
+// RUN:     include-f8e4m3b11fnuz=true include-f8e4m3fn=true \
+// RUN:     include-f8e4m3fnuz=true include-f8e5m2=true \
+// RUN:     include-f8e5m2fnuz=true" \
 // RUN:     --convert-vector-to-scf --convert-scf-to-cf --convert-cf-to-llvm \
 // RUN:     --convert-vector-to-llvm --convert-func-to-llvm \
 // RUN:     --convert-arith-to-llvm --reconcile-unrealized-casts | \
@@ -13,6 +15,13 @@
 // RUN:   FileCheck %s --match-full-lines
 
 // Prints the codes of a vector as unsigned integers.
+func.func @print_f4E2M1FN(%v : vector<16xf4E2M1FN>) {
+  %bits = arith.bitcast %v : vector<16xf4E2M1FN> to vector<16xi4>
+  %u = vector.bitcast %bits : vector<16xi4> to vector<16xui4>
+  vector.print %u : vector<16xui4>
+  return
+}
+
 func.func @print_f6E2M3FN(%v : vector<16xf6E2M3FN>) {
   %bits = arith.bitcast %v : vector<16xf6E2M3FN> to vector<16xi6>
   %u = vector.bitcast %bits : vector<16xi6> to vector<16xui6>
@@ -41,6 +50,13 @@ func.func @print_f8E4M3(%v : vector<16xf8E4M3>) {
   return
 }
 
+func.func @print_f8E4M3FN(%v : vector<16xf8E4M3FN>) {
+  %bits = arith.bitcast %v : vector<16xf8E4M3FN> to vector<16xi8>
+  %u = vector.bitcast %bits : vector<16xi8> to vector<16xui8>
+  vector.print %u : vector<16xui8>
+  return
+}
+
 func.func @print_f8E4M3FNUZ(%v : vector<16xf8E4M3FNUZ>) {
   %bits = arith.bitcast %v : vector<16xf8E4M3FNUZ> to vector<16xi8>
   %u = vector.bitcast %bits : vector<16xi8> to vector<16xui8>
@@ -50,6 +66,13 @@ func.func @print_f8E4M3FNUZ(%v : vector<16xf8E4M3FNUZ>) {
 
 func.func @print_f8E4M3B11FNUZ(%v : vector<16xf8E4M3B11FNUZ>) {
   %bits = arith.bitcast %v : vector<16xf8E4M3B11FNUZ> to vector<16xi8>
+  %u = vector.bitcast %bits : vector<16xi8> to vector<16xui8>
+  vector.print %u : vector<16xui8>
+  return
+}
+
+func.func @print_f8E5M2(%v : vector<16xf8E5M2>) {
+  %bits = arith.bitcast %v : vector<16xf8E5M2> to vector<16xi8>
   %u = vector.bitcast %bits : vector<16xi8> to vector<16xui8>
   vector.print %u : vector<16xui8>
   return
@@ -87,6 +110,21 @@ func.func @print_f64(%v : vector<8xf64>) {
   %bits = arith.bitcast %v : vector<8xf64> to vector<8xi64>
   %u = vector.bitcast %bits : vector<8xi64> to vector<8xui64>
   vector.print %u : vector<8xui64>
+  return
+}
+
+func.func @truncf_f32_to_f4E2M1FN(%bits : vector<16xi32>) {
+  %x = arith.bitcast %bits : vector<16xi32> to vector<16xf32>
+  %0 = arith.truncf %x : vector<16xf32> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%0) : (vector<16xf4E2M1FN>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf32> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%1) : (vector<16xf4E2M1FN>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf32> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%2) : (vector<16xf4E2M1FN>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf32> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%3) : (vector<16xf4E2M1FN>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf32> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%4) : (vector<16xf4E2M1FN>) -> ()
   return
 }
 
@@ -150,6 +188,21 @@ func.func @truncf_f32_to_f8E4M3(%bits : vector<16xi32>) {
   return
 }
 
+func.func @truncf_f32_to_f8E4M3FN(%bits : vector<16xi32>) {
+  %x = arith.bitcast %bits : vector<16xi32> to vector<16xf32>
+  %0 = arith.truncf %x : vector<16xf32> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%0) : (vector<16xf8E4M3FN>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf32> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%1) : (vector<16xf8E4M3FN>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf32> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%2) : (vector<16xf8E4M3FN>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf32> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%3) : (vector<16xf8E4M3FN>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf32> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%4) : (vector<16xf8E4M3FN>) -> ()
+  return
+}
+
 func.func @truncf_f32_to_f8E4M3FNUZ(%bits : vector<16xi32>) {
   %x = arith.bitcast %bits : vector<16xi32> to vector<16xf32>
   %0 = arith.truncf %x : vector<16xf32> to vector<16xf8E4M3FNUZ>
@@ -181,6 +234,21 @@ func.func @truncf_f32_to_f8E4M3B11FNUZ(%bits : vector<16xi32>) {
   return
 }
 
+func.func @truncf_f32_to_f8E5M2(%bits : vector<16xi32>) {
+  %x = arith.bitcast %bits : vector<16xi32> to vector<16xf32>
+  %0 = arith.truncf %x : vector<16xf32> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%0) : (vector<16xf8E5M2>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf32> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%1) : (vector<16xf8E5M2>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf32> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%2) : (vector<16xf8E5M2>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf32> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%3) : (vector<16xf8E5M2>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf32> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%4) : (vector<16xf8E5M2>) -> ()
+  return
+}
+
 func.func @truncf_f32_to_f8E5M2FNUZ(%bits : vector<16xi32>) {
   %x = arith.bitcast %bits : vector<16xi32> to vector<16xf32>
   %0 = arith.truncf %x : vector<16xf32> to vector<16xf8E5M2FNUZ>
@@ -193,6 +261,32 @@ func.func @truncf_f32_to_f8E5M2FNUZ(%bits : vector<16xi32>) {
   func.call @print_f8E5M2FNUZ(%3) : (vector<16xf8E5M2FNUZ>) -> ()
   %4 = arith.truncf %x downward : vector<16xf32> to vector<16xf8E5M2FNUZ>
   func.call @print_f8E5M2FNUZ(%4) : (vector<16xf8E5M2FNUZ>) -> ()
+  return
+}
+
+func.func @truncf_f16_to_f8E5M2(%bits : vector<16xi16>) {
+  %x = arith.bitcast %bits : vector<16xi16> to vector<16xf16>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%0) : (vector<16xf8E5M2>) -> ()
+  %1 = arith.truncf %x upward : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%1) : (vector<16xf8E5M2>) -> ()
+  %2 = arith.truncf %x downward : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%2) : (vector<16xf8E5M2>) -> ()
+  return
+}
+
+func.func @truncf_f16_to_f8E5M2_modes(%bits : vector<16xi16>) {
+  %x = arith.bitcast %bits : vector<16xi16> to vector<16xf16>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%0) : (vector<16xf8E5M2>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%1) : (vector<16xf8E5M2>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%2) : (vector<16xf8E5M2>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%3) : (vector<16xf8E5M2>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%4) : (vector<16xf8E5M2>) -> ()
   return
 }
 
@@ -224,6 +318,17 @@ func.func @truncf_f16_to_f8E4M3B11FNUZ(%bits : vector<16xi16>) {
   return
 }
 
+func.func @truncf_f16_to_f4E2M1FN(%bits : vector<16xi16>) {
+  %x = arith.bitcast %bits : vector<16xi16> to vector<16xf16>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf16> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%0) : (vector<16xf4E2M1FN>) -> ()
+  %1 = arith.truncf %x upward : vector<16xf16> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%1) : (vector<16xf4E2M1FN>) -> ()
+  %2 = arith.truncf %x downward : vector<16xf16> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%2) : (vector<16xf4E2M1FN>) -> ()
+  return
+}
+
 func.func @truncf_bf16_to_f6E2M3FN(%bits : vector<16xi16>) {
   %x = arith.bitcast %bits : vector<16xi16> to vector<16xbf16>
   %0 = arith.truncf %x to_nearest_even : vector<16xbf16> to vector<16xf6E2M3FN>
@@ -232,6 +337,107 @@ func.func @truncf_bf16_to_f6E2M3FN(%bits : vector<16xi16>) {
   func.call @print_f6E2M3FN(%1) : (vector<16xf6E2M3FN>) -> ()
   %2 = arith.truncf %x downward : vector<16xbf16> to vector<16xf6E2M3FN>
   func.call @print_f6E2M3FN(%2) : (vector<16xf6E2M3FN>) -> ()
+  return
+}
+
+func.func @truncf_bf16_to_f8E5M2(%bits : vector<16xi16>) {
+  %x = arith.bitcast %bits : vector<16xi16> to vector<16xbf16>
+  %0 = arith.truncf %x to_nearest_even : vector<16xbf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%0) : (vector<16xf8E5M2>) -> ()
+  %1 = arith.truncf %x upward : vector<16xbf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%1) : (vector<16xf8E5M2>) -> ()
+  %2 = arith.truncf %x downward : vector<16xbf16> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%2) : (vector<16xf8E5M2>) -> ()
+  return
+}
+
+func.func @truncf_f64_to_f8E4M3FN(%bits : vector<16xi64>) {
+  %x = arith.bitcast %bits : vector<16xi64> to vector<16xf64>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf64> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%0) : (vector<16xf8E4M3FN>) -> ()
+  %1 = arith.truncf %x upward : vector<16xf64> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%1) : (vector<16xf8E4M3FN>) -> ()
+  %2 = arith.truncf %x downward : vector<16xf64> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%2) : (vector<16xf8E4M3FN>) -> ()
+  return
+}
+
+func.func @truncf_f64_to_f4E2M1FN(%bits : vector<16xi64>) {
+  %x = arith.bitcast %bits : vector<16xi64> to vector<16xf64>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf64> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%0) : (vector<16xf4E2M1FN>) -> ()
+  %1 = arith.truncf %x upward : vector<16xf64> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%1) : (vector<16xf4E2M1FN>) -> ()
+  %2 = arith.truncf %x downward : vector<16xf64> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%2) : (vector<16xf4E2M1FN>) -> ()
+  return
+}
+
+func.func @truncf_f128_to_f8E5M2(%bits : vector<16xi128>) {
+  %x = arith.bitcast %bits : vector<16xi128> to vector<16xf128>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf128> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%0) : (vector<16xf8E5M2>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf128> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%1) : (vector<16xf8E5M2>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf128> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%2) : (vector<16xf8E5M2>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf128> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%3) : (vector<16xf8E5M2>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf128> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%4) : (vector<16xf8E5M2>) -> ()
+  return
+}
+
+func.func @truncf_f128_to_f8E4M3FN(%bits : vector<16xi128>) {
+  %x = arith.bitcast %bits : vector<16xi128> to vector<16xf128>
+  %0 = arith.truncf %x to_nearest_even : vector<16xf128> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%0) : (vector<16xf8E4M3FN>) -> ()
+  %1 = arith.truncf %x to_nearest_away : vector<16xf128> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%1) : (vector<16xf8E4M3FN>) -> ()
+  %2 = arith.truncf %x toward_zero : vector<16xf128> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%2) : (vector<16xf8E4M3FN>) -> ()
+  %3 = arith.truncf %x upward : vector<16xf128> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%3) : (vector<16xf8E4M3FN>) -> ()
+  %4 = arith.truncf %x downward : vector<16xf128> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%4) : (vector<16xf8E4M3FN>) -> ()
+  return
+}
+
+func.func @truncf_f8E4M3FNUZ_to_f4E2M1FN(%codes : vector<16xi8>) {
+  %x = arith.bitcast %codes : vector<16xi8> to vector<16xf8E4M3FNUZ>
+  %0 = arith.truncf %x to_nearest_even
+      : vector<16xf8E4M3FNUZ> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%0) : (vector<16xf4E2M1FN>) -> ()
+  %1 = arith.truncf %x upward : vector<16xf8E4M3FNUZ> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%1) : (vector<16xf4E2M1FN>) -> ()
+  %2 = arith.truncf %x downward : vector<16xf8E4M3FNUZ> to vector<16xf4E2M1FN>
+  func.call @print_f4E2M1FN(%2) : (vector<16xf4E2M1FN>) -> ()
+  return
+}
+
+func.func @extf_f8E4M3FN(%codes : vector<8xi8>) {
+  %x = arith.bitcast %codes : vector<8xi8> to vector<8xf8E4M3FN>
+  %0 = arith.extf %x : vector<8xf8E4M3FN> to vector<8xf32>
+  func.call @print_f32(%0) : (vector<8xf32>) -> ()
+  %1 = arith.extf %x : vector<8xf8E4M3FN> to vector<8xf16>
+  func.call @print_f16(%1) : (vector<8xf16>) -> ()
+  %2 = arith.extf %x : vector<8xf8E4M3FN> to vector<8xbf16>
+  func.call @print_bf16(%2) : (vector<8xbf16>) -> ()
+  %3 = arith.extf %x : vector<8xf8E4M3FN> to vector<8xf64>
+  func.call @print_f64(%3) : (vector<8xf64>) -> ()
+  return
+}
+
+func.func @extf_f8E5M2(%codes : vector<8xi8>) {
+  %x = arith.bitcast %codes : vector<8xi8> to vector<8xf8E5M2>
+  %0 = arith.extf %x : vector<8xf8E5M2> to vector<8xf32>
+  func.call @print_f32(%0) : (vector<8xf32>) -> ()
+  %1 = arith.extf %x : vector<8xf8E5M2> to vector<8xf16>
+  func.call @print_f16(%1) : (vector<8xf16>) -> ()
+  %2 = arith.extf %x : vector<8xf8E5M2> to vector<8xbf16>
+  func.call @print_bf16(%2) : (vector<8xbf16>) -> ()
+  %3 = arith.extf %x : vector<8xf8E5M2> to vector<8xf64>
+  func.call @print_f64(%3) : (vector<8xf64>) -> ()
   return
 }
 
@@ -328,6 +534,34 @@ func.func @extf_f6E3M2FN(%codes : vector<8xi8>) {
   return
 }
 
+func.func @extf_f4E2M1FN(%codes : vector<8xi8>) {
+  %narrow = arith.trunci %codes : vector<8xi8> to vector<8xi4>
+  %x = arith.bitcast %narrow : vector<8xi4> to vector<8xf4E2M1FN>
+  %0 = arith.extf %x : vector<8xf4E2M1FN> to vector<8xf32>
+  func.call @print_f32(%0) : (vector<8xf32>) -> ()
+  %1 = arith.extf %x : vector<8xf4E2M1FN> to vector<8xf16>
+  func.call @print_f16(%1) : (vector<8xf16>) -> ()
+  %2 = arith.extf %x : vector<8xf4E2M1FN> to vector<8xbf16>
+  func.call @print_bf16(%2) : (vector<8xbf16>) -> ()
+  %3 = arith.extf %x : vector<8xf4E2M1FN> to vector<8xf64>
+  func.call @print_f64(%3) : (vector<8xf64>) -> ()
+  return
+}
+
+func.func @extf_f4E2M1FN_to_narrow(%codes : vector<16xi8>) {
+  %narrow = arith.trunci %codes : vector<16xi8> to vector<16xi4>
+  %x = arith.bitcast %narrow : vector<16xi4> to vector<16xf4E2M1FN>
+  %0 = arith.extf %x : vector<16xf4E2M1FN> to vector<16xf6E2M3FN>
+  func.call @print_f6E2M3FN(%0) : (vector<16xf6E2M3FN>) -> ()
+  %1 = arith.extf %x : vector<16xf4E2M1FN> to vector<16xf6E3M2FN>
+  func.call @print_f6E3M2FN(%1) : (vector<16xf6E3M2FN>) -> ()
+  %2 = arith.extf %x : vector<16xf4E2M1FN> to vector<16xf8E4M3FN>
+  func.call @print_f8E4M3FN(%2) : (vector<16xf8E4M3FN>) -> ()
+  %3 = arith.extf %x : vector<16xf4E2M1FN> to vector<16xf8E5M2>
+  func.call @print_f8E5M2(%3) : (vector<16xf8E5M2>) -> ()
+  return
+}
+
 func.func @entry() {
   // truncf from f32, one line per mode (nearest even, nearest away, toward
   // zero, upward, downward). With u = 2^-p for p mantissa bits, s the smallest
@@ -338,13 +572,26 @@ func.func @entry() {
   //   8-15: M, M-ulp(M)/2 and M+ulp(M)/2 (ties next to M), -(M+3ulp(M)/4),
   //         +Inf, -Inf, quiet NaN 0x7fe00000, signaling NaN 0xff800001.
 
+  // f4E2M1FN: u = 2^-1, s = 2^-1, M = 6 (0x7); no Inf or NaN.
+  %to_f4E2M1FN = arith.constant dense<[
+      0x3FA00000, 0xBFE00000, 0x3FA00008, 0xBF900000,
+      0x3F400000, 0xBE800000, 0x3E000000, 0x80000000,
+      0x40C00000, 0x40A00000, 0x40E00000, 0xC0F00000,
+      0x7F800000, 0xFF800000, 0x7FE00000, 0xFF800001]> : vector<16xi32>
+  // CHECK:      ( 2, 12, 3, 10, 2, 8, 0, 8, 7, 6, 7, 15, 7, 15, 7, 7 )
+  // CHECK-NEXT: ( 3, 12, 3, 10, 2, 9, 0, 8, 7, 7, 7, 15, 7, 15, 7, 7 )
+  // CHECK-NEXT: ( 2, 11, 2, 10, 1, 8, 0, 8, 7, 6, 7, 15, 7, 15, 7, 7 )
+  // CHECK-NEXT: ( 3, 11, 3, 10, 2, 8, 1, 8, 7, 7, 7, 15, 7, 15, 7, 7 )
+  // CHECK-NEXT: ( 2, 12, 2, 11, 1, 9, 0, 8, 7, 6, 7, 15, 7, 15, 7, 7 )
+  func.call @truncf_f32_to_f4E2M1FN(%to_f4E2M1FN) : (vector<16xi32>) -> ()
+
   // f6E2M3FN: u = 2^-3, s = 2^-3, M = 7.5 (0x1f); no Inf or NaN.
   %to_f6E2M3FN = arith.constant dense<[
       0x3F880000, 0xBF980000, 0x3F880008, 0xBF840000,
       0x3E400000, 0xBD800000, 0x3D000000, 0x80000000,
       0x40F00000, 0x40E80000, 0x40F80000, 0xC0FC0000,
       0x7F800000, 0xFF800000, 0x7FE00000, 0xFF800001]> : vector<16xi32>
-  // CHECK:      ( 8, 42, 9, 40, 2, 32, 0, 32, 31, 30, 31, 63, 31, 63, 31, 31 )
+  // CHECK-NEXT: ( 8, 42, 9, 40, 2, 32, 0, 32, 31, 30, 31, 63, 31, 63, 31, 31 )
   // CHECK-NEXT: ( 9, 42, 9, 40, 2, 33, 0, 32, 31, 31, 31, 63, 31, 63, 31, 31 )
   // CHECK-NEXT: ( 8, 41, 8, 40, 1, 32, 0, 32, 31, 30, 31, 63, 31, 63, 31, 31 )
   // CHECK-NEXT: ( 9, 41, 9, 40, 2, 32, 1, 32, 31, 31, 31, 63, 31, 63, 31, 31 )
@@ -390,6 +637,19 @@ func.func @entry() {
   // CHECK-NEXT: ( 56, 186, 56, 185, 1, 129, 0, 128, 119, 118, 119, 248, 120, 248, 126, 252 )
   func.call @truncf_f32_to_f8E4M3(%to_f8E4M3) : (vector<16xi32>) -> ()
 
+  // f8E4M3FN: u = 2^-3, s = 2^-9, M = 448 (0x7e); no Inf, NaN 0x7f/0xff.
+  %to_f8E4M3FN = arith.constant dense<[
+      0x3F880000, 0xBF980000, 0x3F880008, 0xBF840000,
+      0x3B400000, 0xBA800000, 0x3A000000, 0x80000000,
+      0x43E00000, 0x43D80000, 0x43E80000, 0xC3EC0000,
+      0x7F800000, 0xFF800000, 0x7FE00000, 0xFF800001]> : vector<16xi32>
+  // CHECK-NEXT: ( 56, 186, 57, 184, 2, 128, 0, 128, 126, 126, 126, 255, 127, 255, 127, 255 )
+  // CHECK-NEXT: ( 57, 186, 57, 184, 2, 129, 0, 128, 126, 126, 127, 255, 127, 255, 127, 255 )
+  // CHECK-NEXT: ( 56, 185, 56, 184, 1, 128, 0, 128, 126, 125, 126, 254, 127, 255, 127, 255 )
+  // CHECK-NEXT: ( 57, 185, 57, 184, 2, 128, 1, 128, 126, 126, 127, 254, 127, 255, 127, 255 )
+  // CHECK-NEXT: ( 56, 186, 56, 185, 1, 129, 0, 128, 126, 125, 126, 255, 127, 255, 127, 255 )
+  func.call @truncf_f32_to_f8E4M3FN(%to_f8E4M3FN) : (vector<16xi32>) -> ()
+
   // f8E4M3FNUZ: u = 2^-3, s = 2^-10, M = 240 (0x7f); no Inf or -0, the only NaN
   // is 0x80.
   %to_f8E4M3FNUZ = arith.constant dense<[
@@ -419,6 +679,19 @@ func.func @entry() {
   func.call @truncf_f32_to_f8E4M3B11FNUZ(%to_f8E4M3B11FNUZ)
       : (vector<16xi32>) -> ()
 
+  // f8E5M2: u = 2^-2, s = 2^-16, M = 57344 (0x7b); Inf 0x7c, quiet NaN 0x7e.
+  %to_f8E5M2 = arith.constant dense<[
+      0x3F900000, 0xBFB00000, 0x3F900008, 0xBF880000,
+      0x37C00000, 0xB7000000, 0x36800000, 0x80000000,
+      0x47600000, 0x47500000, 0x47700000, 0xC7780000,
+      0x7F800000, 0xFF800000, 0x7FE00000, 0xFF800001]> : vector<16xi32>
+  // CHECK-NEXT: ( 60, 190, 61, 188, 2, 128, 0, 128, 123, 122, 124, 252, 124, 252, 127, 254 )
+  // CHECK-NEXT: ( 61, 190, 61, 188, 2, 129, 0, 128, 123, 123, 124, 252, 124, 252, 127, 254 )
+  // CHECK-NEXT: ( 60, 189, 60, 188, 1, 128, 0, 128, 123, 122, 123, 251, 124, 252, 127, 254 )
+  // CHECK-NEXT: ( 61, 189, 61, 188, 2, 128, 1, 128, 123, 123, 124, 251, 124, 252, 127, 254 )
+  // CHECK-NEXT: ( 60, 190, 60, 189, 1, 129, 0, 128, 123, 122, 123, 252, 124, 252, 127, 254 )
+  func.call @truncf_f32_to_f8E5M2(%to_f8E5M2) : (vector<16xi32>) -> ()
+
   // f8E5M2FNUZ: u = 2^-2, s = 2^-17, M = 57344 (0x7f); no Inf or -0, the only
   // NaN is 0x80.
   %to_f8E5M2FNUZ = arith.constant dense<[
@@ -433,8 +706,40 @@ func.func @entry() {
   // CHECK-NEXT: ( 64, 194, 64, 193, 1, 129, 0, 0, 127, 126, 127, 128, 128, 128, 128, 128 )
   func.call @truncf_f32_to_f8E5M2FNUZ(%to_f8E5M2FNUZ) : (vector<16xi32>) -> ()
 
-  // truncf from f16 and bf16: to_nearest_even, upward and downward, or all
-  // five modes (the f8E4M3B11FNUZ helper).
+  // truncf from f16, bf16, f64 and a narrow source: to_nearest_even, upward and
+  // downward, or all five modes (the *_modes and f8E4M3B11FNUZ helpers).
+
+  // f16 -> f8E5M2 (same exponent range): 1.125 and -1.375 (ties),
+  // 1.125+2^-10, -1.03125, 1.5*2^-16 (a subnormal tie), -2^-17 (half
+  // the smallest subnormal), 2^-24, 2^-14-2^-24 (rounds up to the
+  // smallest normal), 57344 (max), 53248 and 61440 (ties), -65504,
+  // +-Inf, quiet NaN 0x7e01, signaling NaN 0xfd00.
+  %f16_to_f8E5M2 = arith.constant dense<[
+      0x3C80, 0xBD80, 0x3C81, 0xBC20,
+      0x0180, 0x8080, 0x0001, 0x03FF,
+      0x7B00, 0x7A80, 0x7B80, 0xFBFF,
+      0x7C00, 0xFC00, 0x7E01, 0xFD00]> : vector<16xi16>
+  // CHECK-NEXT: ( 60, 190, 61, 188, 2, 128, 0, 4, 123, 122, 124, 252, 124, 252, 126, 255 )
+  // CHECK-NEXT: ( 61, 189, 61, 188, 2, 128, 1, 4, 123, 123, 124, 251, 124, 252, 126, 255 )
+  // CHECK-NEXT: ( 60, 190, 60, 189, 1, 129, 0, 3, 123, 122, 123, 252, 124, 252, 126, 255 )
+  func.call @truncf_f16_to_f8E5M2(%f16_to_f8E5M2) : (vector<16xi16>) -> ()
+
+  // f16 -> f8E5M2 in every mode: 1.125 and -1.125 (ties), 1.125+2^-10,
+  // 2^-14-2^-24 (carries into the smallest normal), -2^-24, 61408, 61440
+  // (the tie above max), 65504, -61440, -65504, +-Inf, the signaling NaNs
+  // 0x7c01 (its payload does not fit), 0xfc01 and 0x7d00, and -NaN 0xfe00.
+  %f16_to_f8E5M2_modes = arith.constant dense<[
+      0x3C80, 0x3C81, 0xBC80, 0x03FF,
+      0x8001, 0x7B7F, 0x7B80, 0x7BFF,
+      0xFB80, 0xFBFF, 0x7C00, 0xFC00,
+      0x7C01, 0xFC01, 0x7D00, 0xFE00]> : vector<16xi16>
+  // CHECK-NEXT: ( 60, 61, 188, 4, 128, 123, 124, 124, 252, 252, 124, 252, 126, 254, 127, 254 )
+  // CHECK-NEXT: ( 61, 61, 189, 4, 128, 123, 124, 124, 252, 252, 124, 252, 126, 254, 127, 254 )
+  // CHECK-NEXT: ( 60, 60, 188, 3, 128, 123, 123, 123, 251, 251, 124, 252, 126, 254, 127, 254 )
+  // CHECK-NEXT: ( 61, 61, 188, 4, 128, 124, 124, 124, 251, 251, 124, 252, 126, 254, 127, 254 )
+  // CHECK-NEXT: ( 60, 60, 189, 3, 129, 123, 123, 123, 252, 252, 124, 252, 126, 254, 127, 254 )
+  func.call @truncf_f16_to_f8E5M2_modes(%f16_to_f8E5M2_modes)
+      : (vector<16xi16>) -> ()
 
   // f16 -> f8E5M2FNUZ (bias 16 > 15: f16 subnormals in [2^-15, 2^-14) become
   // normals): 1.125, -1.375 (ties), 2^-18 (half the smallest subnormal),
@@ -468,6 +773,19 @@ func.func @entry() {
   func.call @truncf_f16_to_f8E4M3B11FNUZ(%f16_to_f8E4M3B11FNUZ)
       : (vector<16xi16>) -> ()
 
+  // f16 -> f4E2M1FN (no Inf or NaN): -Inf, +Inf, -NaN, +NaN (quiet),
+  // -NaN, +NaN (signaling), -6 (max), -7 (tie above max), -100, -65504,
+  // -0, 1, 5 and -5 (ties), 0.25 (tie with 0), 0.75 (tie).
+  %f16_to_f4E2M1FN = arith.constant dense<[
+      0xFC00, 0x7C00, 0xFE00, 0x7E00,
+      0xFC01, 0x7C01, 0xC600, 0xC700,
+      0xD640, 0xFBFF, 0x8000, 0x3C00,
+      0x4500, 0xC500, 0x3400, 0x3A00]> : vector<16xi16>
+  // CHECK-NEXT: ( 15, 7, 7, 7, 7, 7, 15, 15, 15, 15, 8, 2, 6, 14, 0, 2 )
+  // CHECK-NEXT: ( 15, 7, 7, 7, 7, 7, 15, 15, 15, 15, 8, 2, 7, 14, 1, 2 )
+  // CHECK-NEXT: ( 15, 7, 7, 7, 7, 7, 15, 15, 15, 15, 8, 2, 6, 15, 0, 1 )
+  func.call @truncf_f16_to_f4E2M1FN(%f16_to_f4E2M1FN) : (vector<16xi16>) -> ()
+
   // bf16 -> f6E2M3FN (no Inf or NaN): -Inf, +Inf, -NaN, +NaN (quiet),
   // -NaN, +NaN (signaling), -7.5 (max), -8, -7.75 (tie above max),
   // -2^100, -0, 1, 7.25, -2.125, 0.0625 (ties), 0.1875 (tie).
@@ -481,8 +799,134 @@ func.func @entry() {
   // CHECK-NEXT: ( 63, 31, 31, 31, 31, 31, 63, 63, 63, 63, 32, 8, 30, 49, 0, 1 )
   func.call @truncf_bf16_to_f6E2M3FN(%bf16_to_f6E2M3FN) : (vector<16xi16>) -> ()
 
+  // bf16 -> f8E5M2: 1.125 and -1.375 (ties), 1.1328125, -1.03125,
+  // 1.5*2^-16 (subnormal tie), -2^-17, the smallest bf16 subnormal,
+  // 2^-14, 57344 (max), 53248 and 61440 (ties), -63488, +-Inf, quiet
+  // NaN 0x7fc1, signaling NaN 0xffa0.
+  %bf16_to_f8E5M2 = arith.constant dense<[
+      0x3F90, 0xBFB0, 0x3F91, 0xBF84,
+      0x37C0, 0xB700, 0x0001, 0x3880,
+      0x4760, 0x4750, 0x4770, 0xC778,
+      0x7F80, 0xFF80, 0x7FC1, 0xFFA0]> : vector<16xi16>
+  // CHECK-NEXT: ( 60, 190, 61, 188, 2, 128, 0, 4, 123, 122, 124, 252, 124, 252, 126, 255 )
+  // CHECK-NEXT: ( 61, 189, 61, 188, 2, 128, 1, 4, 123, 123, 124, 251, 124, 252, 126, 255 )
+  // CHECK-NEXT: ( 60, 190, 60, 189, 1, 129, 0, 4, 123, 122, 123, 252, 124, 252, 126, 255 )
+  func.call @truncf_bf16_to_f8E5M2(%bf16_to_f8E5M2) : (vector<16xi16>) -> ()
+
+  // f64 -> f8E4M3FN: 400+2^-30 and 1.0625+2^-40 (just above a tie;
+  // rounding to f32 first would land on the tie), 1.0625 and -1.1875
+  // (ties), 1+2^-52, -(1.0625-2^-52), 1.5*2^-9 (subnormal tie), +-the
+  // smallest f64 subnormal, 448 (max), 464 (tie above max), 464+2^-44,
+  // +-1e300, -Inf, NaN.
+  %f64_to_f8E4M3FN = arith.constant dense<[
+      0x4079000000004000, 0x3FF1000000001000,
+      0x3FF1000000000000, 0xBFF3000000000000,
+      0x3FF0000000000001, 0xBFF0FFFFFFFFFFFF,
+      0x3F68000000000000, 0x0000000000000001,
+      0x8000000000000001, 0x407C000000000000,
+      0x407D000000000000, 0x407D000000000001,
+      0x7E37E43C8800759C, 0xFE37E43C8800759C,
+      0xFFF0000000000000, 0x7FF8000000000000]> : vector<16xi64>
+  // CHECK-NEXT: ( 125, 57, 56, 186, 56, 184, 2, 0, 128, 126, 126, 127, 127, 255, 255, 127 )
+  // CHECK-NEXT: ( 125, 57, 57, 185, 57, 184, 2, 1, 128, 126, 127, 127, 127, 254, 255, 127 )
+  // CHECK-NEXT: ( 124, 56, 56, 186, 56, 185, 1, 0, 129, 126, 126, 126, 126, 255, 255, 127 )
+  func.call @truncf_f64_to_f8E4M3FN(%f64_to_f8E4M3FN) : (vector<16xi64>) -> ()
+
+  // f64 -> f4E2M1FN: 5, -5, 1.25 (ties), 1.25+2^-40, 3.5, -2.5,
+  // 0.75 (ties), -0.25 (tie with -0), 0.25+2^-54, the smallest f64
+  // subnormal, 7 (tie above max), -1e300, +-Inf, NaN, -0.
+  %f64_to_f4E2M1FN = arith.constant dense<[
+      0x4014000000000000, 0xC014000000000000,
+      0x3FF4000000000000, 0x3FF4000000001000,
+      0x400C000000000000, 0xC004000000000000,
+      0x3FE8000000000000, 0xBFD0000000000000,
+      0x3FD0000000000001, 0x0000000000000001,
+      0x401C000000000000, 0xFE37E43C8800759C,
+      0x7FF0000000000000, 0xFFF0000000000000,
+      0x7FF8000000000000, 0x8000000000000000]> : vector<16xi64>
+  // CHECK-NEXT: ( 6, 14, 2, 3, 6, 12, 2, 8, 1, 0, 7, 15, 7, 15, 7, 8 )
+  // CHECK-NEXT: ( 7, 14, 3, 3, 6, 12, 2, 8, 1, 1, 7, 15, 7, 15, 7, 8 )
+  // CHECK-NEXT: ( 6, 15, 2, 2, 5, 13, 1, 9, 0, 0, 7, 15, 7, 15, 7, 8 )
+  func.call @truncf_f64_to_f4E2M1FN(%f64_to_f4E2M1FN) : (vector<16xi64>) -> ()
+
+  // f128 -> f8E5M2 and f8E4M3FN, rounded to odd into f64 first. Rounding to
+  // nearest through f64 instead would land on a tie or a value of the format
+  // for most inputs: those within 2^-70 of one (1.125+2^-70, -(1.125+2^-70),
+  // 1.25-2^-70, 1.375-2^-70, 1+2^-70, -(1+2^-70)), 2^-17+2^-90 (above the
+  // subnormal tie), 61440-2^-58 and -(61440+2^-58) (around the overflow tie),
+  // 1.125+2^-112; also 2^1100, -2^-1099 (beyond f64's range), -0, +Inf, a
+  // quiet NaN with payload 0x123 and a negative signaling NaN.
+  %f128_to_f8E5M2 = arith.constant dense<[
+      0x3FFF2000000000000000040000000000, 0xBFFF2000000000000000040000000000,
+      0x3FFF3FFFFFFFFFFFFFFFFC0000000000, 0x3FFF5FFFFFFFFFFFFFFFFC0000000000,
+      0x3FFF0000000000000000040000000000, 0xBFFF0000000000000000040000000000,
+      0x3FEE0000000000000000008000000000, 0x400EDFFFFFFFFFFFFFFFFF8000000000,
+      0xC00EE000000000000000008000000000, 0x3FFF2000000000000000000000000001,
+      0x444B0000000000000000000000000000, 0xBBB40000000000000000000000000000,
+      0x80000000000000000000000000000000, 0x7FFF0000000000000000000000000000,
+      0x7FFF8000000000000000000000000123, 0xFFFF4000000000000000000000000000
+  ]> : vector<16xi128>
+  // CHECK-NEXT: ( 61, 189, 61, 61, 60, 188, 1, 123, 252, 61, 124, 128, 128, 124, 126, 255 )
+  // CHECK-NEXT: ( 61, 189, 61, 61, 60, 188, 1, 123, 252, 61, 124, 128, 128, 124, 126, 255 )
+  // CHECK-NEXT: ( 60, 188, 60, 61, 60, 188, 0, 123, 251, 60, 123, 128, 128, 124, 126, 255 )
+  // CHECK-NEXT: ( 61, 188, 61, 62, 61, 188, 1, 124, 251, 61, 124, 128, 128, 124, 126, 255 )
+  // CHECK-NEXT: ( 60, 189, 60, 61, 60, 189, 0, 123, 252, 60, 123, 129, 128, 124, 126, 255 )
+  func.call @truncf_f128_to_f8E5M2(%f128_to_f8E5M2) : (vector<16xi128>) -> ()
+
+  // 1.0625+2^-70, -(1.0625+2^-70), 1.0625-2^-70, 1.125-2^-70, -(1+2^-70),
+  // 1.1875-2^-70, -(2^-10-2^-90), 2^-10+2^-90 (around the subnormal tie),
+  // 464+2^-60, 464-2^-60 (around the overflow tie), -(448+2^-60), 2^1100,
+  // 2^-1099, 0, -Inf, a negative quiet NaN.
+  %f128_to_f8E4M3FN = arith.constant dense<[
+      0x3FFF1000000000000000040000000000, 0xBFFF1000000000000000040000000000,
+      0x3FFF0FFFFFFFFFFFFFFFFC0000000000, 0x3FFF1FFFFFFFFFFFFFFFFC0000000000,
+      0xBFFF0000000000000000040000000000, 0x3FFF2FFFFFFFFFFFFFFFFC0000000000,
+      0xBFF4FFFFFFFFFFFFFFFFFFFE00000000, 0x3FF50000000000000000000100000000,
+      0x4007D000000000000000100000000000, 0x4007CFFFFFFFFFFFFFFFF00000000000,
+      0xC007C000000000000000100000000000, 0x444B0000000000000000000000000000,
+      0x3BB40000000000000000000000000000, 0x00000000000000000000000000000000,
+      0xFFFF0000000000000000000000000000, 0xFFFFC000000000000000000000000000
+  ]> : vector<16xi128>
+  // CHECK-NEXT: ( 57, 185, 56, 57, 184, 57, 128, 1, 127, 126, 254, 127, 0, 0, 255, 255 )
+  // CHECK-NEXT: ( 57, 185, 56, 57, 184, 57, 128, 1, 127, 126, 254, 127, 0, 0, 255, 255 )
+  // CHECK-NEXT: ( 56, 184, 56, 56, 184, 57, 128, 0, 126, 126, 254, 126, 0, 0, 255, 255 )
+  // CHECK-NEXT: ( 57, 184, 57, 57, 184, 58, 128, 1, 127, 127, 254, 127, 1, 0, 255, 255 )
+  // CHECK-NEXT: ( 56, 185, 56, 56, 185, 57, 129, 0, 126, 126, 255, 126, 0, 0, 255, 255 )
+  func.call @truncf_f128_to_f8E4M3FN(%f128_to_f8E4M3FN)
+      : (vector<16xi128>) -> ()
+
+  // f8E4M3FNUZ -> f4E2M1FN (a narrow source is decoded exactly first):
+  // 1.25, -2.5, 3.5, 5 (ties), 5.5, 10, 0.375, 0.25 (tie with 0),
+  // -0.140625, 0.140625, +-240, NaN, 0, 1.5, 0.5.
+  %f8E4M3FNUZ_to_f4E2M1FN = arith.constant dense<[
+      0x42, 0xCA, 0x4E, 0x52, 0x53, 0x5A, 0x34, 0x30,
+      0xA9, 0x29, 0x7F, 0xFF, 0x80, 0x00, 0x44, 0x38]> : vector<16xi8>
+  // CHECK-NEXT: ( 2, 12, 6, 6, 7, 7, 1, 0, 8, 0, 7, 15, 7, 0, 3, 1 )
+  // CHECK-NEXT: ( 3, 12, 6, 7, 7, 7, 1, 1, 8, 1, 7, 15, 7, 0, 3, 1 )
+  // CHECK-NEXT: ( 2, 13, 5, 6, 6, 7, 0, 0, 9, 0, 7, 15, 7, 0, 3, 1 )
+  func.call @truncf_f8E4M3FNUZ_to_f4E2M1FN(%f8E4M3FNUZ_to_f4E2M1FN)
+      : (vector<16xi8>) -> ()
+
   // extf from each format; each @extf_* prints the f32, f16, bf16 and f64
   // results.
+
+  // f8E4M3FN: 2^-9, 7*2^-9, 2^-6, 448, -0, -1.125, NaN, -NaN.
+  %from_f8E4M3FN = arith.constant dense<[
+      0x01, 0x07, 0x08, 0x7E, 0x80, 0xB9, 0x7F, 0xFF]> : vector<8xi8>
+  // CHECK-NEXT: ( 989855744, 1012924416, 1015021568, 1138753536, 2147483648, 3213885440, 2146435072, 4293918720 )
+  // CHECK-NEXT: ( 6144, 8960, 9216, 24320, 32768, 48256, 32640, 65408 )
+  // CHECK-NEXT: ( 15104, 15456, 15488, 17376, 32768, 49040, 32752, 65520 )
+  // CHECK-NEXT: ( 4566650022153682944, 4579034921128951808, 4580160821035794432, 4646588915539509248, 9223372036854775808, 13831117405608214528, 9222809086901354496, 18446181123756130304 )
+  func.call @extf_f8E4M3FN(%from_f8E4M3FN) : (vector<8xi8>) -> ()
+
+  // f8E5M2: 2^-16, 3*2^-16, 2^-14, 57344, -Inf, +Inf, sNaN 0x7d, -qNaN 0xff.
+  %from_f8E5M2 = arith.constant dense<[
+      0x01, 0x03, 0x04, 0x7B, 0xFC, 0x7C, 0x7D, 0xFF]> : vector<8xi8>
+  // CHECK-NEXT: ( 931135488, 943718400, 947912704, 1197473792, 4286578688, 2139095040, 2145386496, 4292870144 )
+  // CHECK-NEXT: ( 256, 768, 1024, 31488, 64512, 31744, 32512, 65280 )
+  // CHECK-NEXT: ( 14208, 14400, 14464, 18272, 65408, 32640, 32736, 65504 )
+  // CHECK-NEXT: ( 4535124824762089472, 4541880224203145216, 4544132024016830464, 4678114112931102720, 18442240474082181120, 9218868437227405312, 9222246136947933184, 18445618173802708992 )
+  func.call @extf_f8E5M2(%from_f8E5M2) : (vector<8xi8>) -> ()
 
   // f8E4M3: 2^-9, 2^-6, 240, -240, +Inf, -Inf, sNaN 0x79, -qNaN 0xfc.
   %from_f8E4M3 = arith.constant dense<[
@@ -546,5 +990,25 @@ func.func @entry() {
   // CHECK-NEXT: ( 15744, 15936, 16000, 16864, 49632, 32768, 48704, 16288 )
   // CHECK-NEXT: ( 4589168020290535424, 4595923419731591168, 4598175219545276416, 4628574517030027264, 13851946553884803072, 9223372036854775808, 13819295456586366976, 4608308318706860032 )
   func.call @extf_f6E3M2FN(%from_f6E3M2FN) : (vector<8xi8>) -> ()
+
+  // f4E2M1FN: 0.5, 1, 3, 6, -6, -0, -0.5, -4.
+  %from_f4E2M1FN = arith.constant dense<[
+      0x1, 0x2, 0x5, 0x7, 0xF, 0x8, 0x9, 0xE]> : vector<8xi8>
+  // CHECK-NEXT: ( 1056964608, 1065353216, 1077936128, 1086324736, 3233808384, 2147483648, 3204448256, 3229614080 )
+  // CHECK-NEXT: ( 14336, 15360, 16896, 17920, 50688, 32768, 47104, 50176 )
+  // CHECK-NEXT: ( 16128, 16256, 16448, 16576, 49344, 32768, 48896, 49280 )
+  // CHECK-NEXT: ( 4602678819172646912, 4607182418800017408, 4613937818241073152, 4618441417868443648, 13841813454723219456, 9223372036854775808, 13826050856027422720, 13839561654909534208 )
+  func.call @extf_f4E2M1FN(%from_f4E2M1FN) : (vector<8xi8>) -> ()
+
+  // f4E2M1FN -> f6E2M3FN, f6E3M2FN, f8E4M3FN, f8E5M2 (exact),
+  // every code.
+  %all_f4E2M1FN = arith.constant dense<[
+      0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
+      0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF]> : vector<16xi8>
+  // CHECK-NEXT: ( 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60 )
+  // CHECK-NEXT: ( 0, 8, 12, 14, 16, 18, 20, 22, 32, 40, 44, 46, 48, 50, 52, 54 )
+  // CHECK-NEXT: ( 0, 48, 56, 60, 64, 68, 72, 76, 128, 176, 184, 188, 192, 196, 200, 204 )
+  // CHECK-NEXT: ( 0, 56, 60, 62, 64, 66, 68, 70, 128, 184, 188, 190, 192, 194, 196, 198 )
+  func.call @extf_f4E2M1FN_to_narrow(%all_f4E2M1FN) : (vector<16xi8>) -> ()
   return
 }
