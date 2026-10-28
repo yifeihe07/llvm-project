@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Checks the FloatFormatSpecs against APFloat, and the folded expansion (greedy
-// driver, public populate functions) against APFloat::convert, from bf16, f32,
-// f80 and f128.
+// driver, public populate functions) against APFloat::convert, from bf16, tf32,
+// f32, f64, f80 and f128.
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,17 +45,21 @@ struct FormatRow {
   NaNFamily nanFamily;
   uint64_t maxFiniteBits; ///< The largest finite value, sign clear.
   uint64_t quietNaNBits;  ///< APFloat::getNaN; max-finite without a NaN.
+  bool hasZero = true;
 };
 
 // E.g. f8E4M3FN (precision 4, minExponent -6): 3 mantissa and 4 exponent bits,
 // bias 7, max-finite 0x7E = 448 (0x7F is the NaN). APFloat gives FNUZ formats a
-// minimum exponent one lower, so f8E4M3FNUZ has bias 8 and f8E5M2FNUZ 16.
+// minimum exponent one lower, so f8E4M3FNUZ has bias 8 and f8E5M2FNUZ 16;
+// f8E8M0FNU (no zero, minimum exponent -127) has bias 128, code c being
+// 2^(c - 127).
 const FormatRow kFormats[] = {
     {"f8E5M2", 8, 2, 5, 15, true, IEEENaN, 0x7B, 0x7E},
     {"f8E4M3", 8, 3, 4, 7, true, IEEENaN, 0x77, 0x7C},
     {"f8E3M4", 8, 4, 3, 3, true, IEEENaN, 0x6F, 0x78},
     {"f8E4M3FN", 8, 3, 4, 7, true, AllOnesNaN, 0x7E, 0x7F},
     {"f8E5M3FNU", 8, 3, 5, 15, false, AllOnesNaN, 0xFE, 0xFF},
+    {"f8E8M0FNU", 8, 0, 8, 128, false, AllOnesNaN, 0xFE, 0xFF, false},
     {"f8E4M3FNUZ", 8, 3, 4, 8, true, NegZeroNaN, 0x7F, 0x80},
     {"f8E5M2FNUZ", 8, 2, 5, 16, true, NegZeroNaN, 0x7F, 0x80},
     {"f8E4M3B11FNUZ", 8, 3, 4, 11, true, NegZeroNaN, 0x7F, 0x80},
@@ -87,6 +91,7 @@ void expectSpecMatches(const arith::FloatFormatSpec &spec,
   EXPECT_EQ(spec.hasNaN(), row.nanFamily != NoNaN);
   EXPECT_EQ(spec.maxFiniteBitsAbs, row.maxFiniteBits);
   EXPECT_EQ(spec.quietNaNBits, row.quietNaNBits);
+  EXPECT_EQ(spec.hasZero, row.hasZero);
 }
 
 TEST(FloatFormatSpecTest, BuiltinFloatTypes) {
@@ -143,14 +148,17 @@ TEST(FloatFormatSpecTest, SameExponentLayout) {
   }
 }
 
-// Every APFloat format the expansion can describe (a zero, subnormals, at most
-// 64 bits), so one added to APFloat later is covered too: each code a spec
-// records decodes, through APFloat, to the value the expansion relies on.
+// Every APFloat format the expansion can describe (a zero and subnormals, or
+// neither if unsigned with precision 1; at most 64 bits), so one added to
+// APFloat later is covered too: each code a spec records decodes, through
+// APFloat, to the value the expansion relies on.
 TEST(FloatFormatSpecTest, EncodingsMatchAPFloat) {
   for (unsigned i = 0; i != APFloat::S_MaxSemantics + 1; ++i) {
     const llvm::fltSemantics &sem =
         APFloat::EnumToSemantics(static_cast<APFloat::Semantics>(i));
-    if (!sem.hasZero || !sem.hasDenormals ||
+    if (sem.hasZero != sem.hasDenormals ||
+        (!sem.hasZero && (APFloat::semanticsHasSignedRepr(sem) ||
+                          APFloat::semanticsPrecision(sem) != 1)) ||
         APFloat::semanticsSizeInBits(sem) > 64)
       continue;
     SCOPED_TRACE(testing::Message() << "APFloat::Semantics " << i);
@@ -167,12 +175,15 @@ TEST(FloatFormatSpecTest, EncodingsMatchAPFloat) {
     EXPECT_EQ(spec.hasNaN(), APFloat::semanticsHasNaN(sem));
     EXPECT_EQ(spec.expBits + spec.mantBits + (spec.isSigned ? 1 : 0), size);
     EXPECT_EQ(spec.maxStoredExp, (1u << spec.expBits) - 1);
+    EXPECT_EQ(spec.hasZero, sem.hasZero);
 
     // Exponent field 0 is the zero / subnormal binade, and field 1 holds the
-    // smallest normal, 2^(1 - bias).
-    EXPECT_TRUE(decode(0).isPosZero());
-    EXPECT_TRUE(decode(1).bitwiseIsEqual(APFloat::getSmallest(sem)));
-    APFloat minNormal = decode(uint64_t(1) << spec.mantBits);
+    // smallest normal, 2^(1 - bias); without a zero, code 0 holds it.
+    if (spec.hasZero) {
+      EXPECT_TRUE(decode(0).isPosZero());
+      EXPECT_TRUE(decode(1).bitwiseIsEqual(APFloat::getSmallest(sem)));
+    }
+    APFloat minNormal = decode(spec.hasZero ? uint64_t(1) << spec.mantBits : 0);
     EXPECT_TRUE(minNormal.bitwiseIsEqual(APFloat::getSmallestNormalized(sem)));
     EXPECT_EQ(ilogb(minNormal), 1 - spec.bias);
     EXPECT_EQ(spec.maxFiniteBitsAbs,
@@ -381,6 +392,66 @@ TEST(NarrowFloatExpansionTest, UnsignedFoldedValuesMatchAPFloat) {
                              populate);
 }
 
+// f8E8M0FNU (no zero, no sign; code c is 2^(c - 127)) through its populate
+// function, from f32 (extended to f64) and f64: ties at 1.5 and 3 (they round
+// up: the kept bit is the implicit one), 2^-127 (code 0), the tie 1.5*2^-127,
+// 2^-128 and +-0 (code 0 too, without a zero), 2^127 (max-finite), the overflow
+// tie 1.5*2^127, max-finite of f32 and f64, -3, -1.25, a negative overflow,
+// +Inf and a NaN. Also tf32 (extended to f64 too): 1.5, -3, 2^-127 and
+// 1.5*2^-127 (subnormals), -1.25, 2^127, max-finite and +Inf.
+TEST(NarrowFloatExpansionTest, NoZeroFoldedValuesMatchAPFloat) {
+  MLIRContext ctx;
+  ctx.loadDialect<arith::ArithDialect, func::FuncDialect>();
+  const uint32_t f32Inputs[] = {0x3FC00000, 0x40400000, 0x00400000, 0x00600000,
+                                0x00200000, 0x00000000, 0x80000000, 0x7F000000,
+                                0x7F400000, 0x7F7FFFFF, 0xC0400000, 0xBFA00000,
+                                0xFF7FFFFF, 0x7F800000, 0x7FC00000};
+  const uint64_t f64Inputs[] = {
+      0x3FF8000000000000, 0x4008000000000000, 0x3800000000000000,
+      0x3808000000000000, 0x37F0000000000000, 0x0000000000000001,
+      0x8000000000000000, 0x47E0000000000000, 0x47E8000000000000,
+      0x7FEFFFFFFFFFFFFF, 0xC008000000000000, 0xBFF4000000000000,
+      0xC7F0000000000000, 0x7FF0000000000000, 0x7FF8000000000000};
+  const uint32_t tf32Inputs[] = {0x1FE00, 0x60200, 0x00200, 0x00300,
+                                 0x5FD00, 0x3F800, 0x3FBFF, 0x3FC00};
+  FloatType dstTy = Float8E8M0FNUType::get(&ctx);
+  expectFoldedMatchesAPFloat(ctx, dstTy, f32Inputs,
+                             arith::populateExpandF8E8M0Patterns);
+  SmallVector<APInt> f64Bits;
+  for (uint64_t input : f64Inputs)
+    f64Bits.push_back(APInt(64, input));
+  expectFoldedMatchesAPFloat(ctx, Float64Type::get(&ctx), f64Bits, dstTy,
+                             arith::populateExpandF8E8M0Patterns);
+  SmallVector<APInt> tf32Bits;
+  for (uint32_t input : tf32Inputs)
+    tf32Bits.push_back(APInt(19, input));
+  expectFoldedMatchesAPFloat(ctx, FloatTF32Type::get(&ctx), tf32Bits, dstTy,
+                             arith::populateExpandF8E8M0Patterns);
+}
+
+// Without a rounding mode, populateExpandF8E8M0Patterns expands a truncf into
+// f8E8M0FNU by its exponent, rounding toward zero (1.5 gives 1, code 0x7F),
+// from f32 and f64 alike; the generic patterns leave it.
+TEST(NarrowFloatExpansionTest, NoZeroWithoutRoundingMode) {
+  MLIRContext ctx;
+  ctx.loadDialect<arith::ArithDialect, func::FuncDialect>();
+  FloatType dstTy = Float8E8M0FNUType::get(&ctx);
+  auto generic = [](RewritePatternSet &p) {
+    arith::populateExpandNarrowFloatPatterns(p,
+                                             TypeID::get<Float8E8M0FNUType>());
+  };
+  const std::pair<FloatType, APInt> inputs[] = {
+      {Float32Type::get(&ctx), APInt(32, 0x3FC00000)},
+      {Float64Type::get(&ctx), APInt(64, 0x3FF8000000000000)}};
+  for (const auto &[srcTy, bits] : inputs) {
+    EXPECT_EQ(expandThenFold(ctx, srcTy, bits, dstTy, std::nullopt,
+                             arith::populateExpandF8E8M0Patterns),
+              std::optional<uint64_t>(0x7F));
+    EXPECT_FALSE(
+        expandThenFold(ctx, srcTy, bits, dstTy, std::nullopt, generic));
+  }
+}
+
 // A signed format through its per-format populate function, negative inputs
 // included: ties at 1.0625 and at -2^-10 (half the smallest subnormal), -448
 // (max-finite) and -464 (the tie above it), a negative overflow, -Inf and -0.
@@ -457,14 +528,16 @@ TEST(NarrowFloatExpansionTest, WideSourceFoldedValuesMatchAPFloat) {
     f80Bits.push_back(APInt(80, {low, high}));
   const TypeID types[] = {
       TypeID::get<Float8E5M2Type>(), TypeID::get<Float8E4M3FNType>(),
-      TypeID::get<Float4E2M1FNType>(), TypeID::get<Float8E5M2FNUZType>()};
+      TypeID::get<Float4E2M1FNType>(), TypeID::get<Float8E5M2FNUZType>(),
+      TypeID::get<Float8E8M0FNUType>()};
   auto populate = [&](RewritePatternSet &p) {
     arith::populateExpandNarrowFloatPatterns(p, types);
   };
   for (FloatType dstTy : {FloatType(Float8E5M2Type::get(&ctx)),
                           FloatType(Float8E4M3FNType::get(&ctx)),
                           FloatType(Float4E2M1FNType::get(&ctx)),
-                          FloatType(Float8E5M2FNUZType::get(&ctx))}) {
+                          FloatType(Float8E5M2FNUZType::get(&ctx)),
+                          FloatType(Float8E8M0FNUType::get(&ctx))}) {
     expectFoldedMatchesAPFloat(ctx, Float128Type::get(&ctx), f128Bits, dstTy,
                                populate);
     expectFoldedMatchesAPFloat(ctx, Float80Type::get(&ctx), f80Bits, dstTy,

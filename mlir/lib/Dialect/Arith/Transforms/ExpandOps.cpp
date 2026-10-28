@@ -83,13 +83,18 @@ static bool isEmitterWideType(Type ty) {
   return ty.isF16() || ty.isBF16() || ty.isF32() || ty.isF64();
 }
 
-/// A float the emitters take: at most 8 bits, with a zero and subnormals.
-static bool isNarrowFloat(Type ty) {
+/// A float the emitters take: at most 8 bits, with a zero and subnormals or,
+/// as a truncation destination only, an unsigned precision-1 format with
+/// neither.
+static bool isNarrowFloat(Type ty, bool asTruncDest = false) {
   auto floatTy = dyn_cast<FloatType>(ty);
   if (!floatTy || floatTy.getWidth() > 8)
     return false;
   const llvm::fltSemantics &sem = floatTy.getFloatSemantics();
-  return sem.hasZero && sem.hasDenormals;
+  if (sem.hasZero && sem.hasDenormals)
+    return true;
+  return asTruncDest && !sem.hasZero && !sem.hasDenormals &&
+         !sem.hasSignedRepr && APFloat::semanticsPrecision(sem) == 1;
 }
 
 /// Whether every finite `from` value is exact in `to` (or, if `allowOverflow`,
@@ -133,23 +138,23 @@ static bool canRoundFrom(FloatType src, FloatType dst) {
 }
 
 /// Returns the type emitNarrowFloatTrunc rounds from: `src`; f64 for f80 and
-/// f128 (see emitRoundToOddF64Bits); else f32 reached exactly (extf from tf32
-/// or f16, or a decode); or null.
+/// f128 (see emitRoundToOddF64Bits); else f32, or f64 if f32's range is too
+/// small, reached exactly (extf, or a decode); or null.
 static FloatType getTruncSourceType(FloatType src, FloatType dst) {
   if (isEmitterWideType(src) && canRoundFrom(src, dst))
     return src;
-  if (isa<Float80Type, Float128Type>(src)) {
-    FloatType f64 = Float64Type::get(src.getContext());
+  FloatType f64 = Float64Type::get(src.getContext());
+  if (isa<Float80Type, Float128Type>(src))
     return canRoundFrom(f64, dst) ? f64 : FloatType();
-  }
   FloatType f32 = Float32Type::get(src.getContext());
-  if (!canRoundFrom(f32, dst))
-    return FloatType();
   if (isa<Float8E8M0FNUType>(src))
-    return f32;
+    return canRoundFrom(f32, dst) ? f32 : FloatType();
+  FloatType wide = canRoundFrom(f32, dst) ? f32 : f64;
+  if (!canRoundFrom(wide, dst))
+    return FloatType();
   bool decodable = isNarrowFloat(src);
-  bool extendable = src.getWidth() > 8 && src.getWidth() < 32;
-  return (decodable || extendable) && isExactIn(src, f32) ? f32 : FloatType();
+  bool extendable = src.getWidth() > 8 && src.getWidth() < wide.getWidth();
+  return (decodable || extendable) && isExactIn(src, wide) ? wide : FloatType();
 }
 
 /// Returns the type emitNarrowFloatExt writes for `src` to `dst`, or null: f16
@@ -182,9 +187,9 @@ static FloatType getExtResultType(FloatType src, FloatType dst) {
 }
 
 /// The gate shared by the converters and the pass legality. A truncf into a
-/// listed type, or an exact extf between narrow floats one of them listed, is a
-/// rounding; any other extf from a listed type an extension. Dynamic shapes are
-/// left alone (no splat constants).
+/// listed type (which may lack a zero), or an exact extf between narrow floats
+/// one of them listed, is a rounding; any other extf from a listed type an
+/// extension. Dynamic shapes are left alone (no splat constants).
 static bool canExpandNarrowFloat(bool isExt, Type srcTy, Type dstTy, Type opTy,
                                  ArrayRef<TypeID> narrowTypes) {
   if (auto shapedTy = dyn_cast<ShapedType>(opTy);
@@ -194,11 +199,12 @@ static bool canExpandNarrowFloat(bool isExt, Type srcTy, Type dstTy, Type opTy,
   auto dst = dyn_cast<FloatType>(dstTy);
   if (!src || !dst)
     return false;
-  auto isListed = [&](FloatType ty) {
-    return isNarrowFloat(ty) && llvm::is_contained(narrowTypes, ty.getTypeID());
+  auto isListed = [&](FloatType ty, bool asTruncDest = false) {
+    return isNarrowFloat(ty, asTruncDest) &&
+           llvm::is_contained(narrowTypes, ty.getTypeID());
   };
   if (!isExt)
-    return isListed(dst) && getTruncSourceType(src, dst);
+    return isListed(dst, /*asTruncDest=*/true) && getTruncSourceType(src, dst);
   if (isExactNarrowPair(src, dst))
     return (isListed(dst) || isListed(src)) && getTruncSourceType(src, dst);
   return isListed(src) && getExtResultType(src, dst);
@@ -625,15 +631,21 @@ struct F8E8M0TruncFOpConverter : public OpRewritePattern<arith::TruncFOp> {
           op, "only applicable to default rounding mode.");
     }
 
+    // Taking the exponent rounds toward zero: do so from a wider source's bits.
+    if (operandETy.getIntOrFloatBitWidth() > 32) {
+      rewriter.replaceOp(
+          op, emitNarrowFloatRounding(b, rewriter, operand, resultTy,
+                                      arith::RoundingMode::toward_zero,
+                                      op.getFastmathAttr()));
+      return success();
+    }
+
     Type i8Ty = cloneToShapedType(operandTy, b.getI8Type());
     Type i32Ty = cloneToShapedType(operandTy, b.getI32Type());
     Type f32Ty = cloneToShapedType(operandTy, b.getF32Type());
 
     if (operandETy.getIntOrFloatBitWidth() < 32) {
       operand = arith::ExtFOp::create(b, f32Ty, operand, op.getFastmathAttr());
-    } else if (operandETy.getIntOrFloatBitWidth() > 32) {
-      operand = arith::TruncFOp::create(
-          b, f32Ty, operand, op.getRoundingmodeAttr(), op.getFastmathAttr());
     }
     Value f32Bits = arith::BitcastOp::create(b, i32Ty, operand);
     Value cF32MantissaWidth = createConst(op->getLoc(), i32Ty, 23, rewriter);
@@ -658,6 +670,11 @@ struct NarrowFloatTruncFOpConverter : public OpRewritePattern<arith::TruncFOp> {
             /*isExt=*/false, getElementTypeOrSelf(operand.getType()),
             getElementTypeOrSelf(resultTy), resultTy, narrowTypes))
       return rewriter.notifyMatchFailure(op, "not a narrow-float truncf");
+    // Without a mode, a truncf into a format without a zero takes the exponent
+    // (populateExpandF8E8M0Patterns), not the default rounding.
+    auto resultETy = cast<FloatType>(getElementTypeOrSelf(resultTy));
+    if (!op.getRoundingmode() && !resultETy.getFloatSemantics().hasZero)
+      return rewriter.notifyMatchFailure(op, "no rounding mode");
 
     ImplicitLocOpBuilder b(op.getLoc(), rewriter);
     arith::RoundingMode rnd =
@@ -1006,6 +1023,7 @@ void mlir::arith::populateExpandF8E4M3FNPatterns(RewritePatternSet &patterns) {
 void mlir::arith::populateExpandF8E8M0Patterns(RewritePatternSet &patterns) {
   patterns.add<F8E8M0ExtFOpConverter, F8E8M0TruncFOpConverter>(
       patterns.getContext());
+  populateExpandNarrowFloatPatterns(patterns, TypeID::get<Float8E8M0FNUType>());
 }
 
 void mlir::arith::populateExpandScalingExtTruncPatterns(
