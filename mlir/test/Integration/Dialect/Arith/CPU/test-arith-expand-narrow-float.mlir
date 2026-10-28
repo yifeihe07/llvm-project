@@ -610,6 +610,17 @@ func.func @extf_f4E2M1FN(%codes : vector<8xi8>) {
   return
 }
 
+func.func @extf_f8E8M0FNU(%bits : vector<8xi8>) {
+  %x = arith.bitcast %bits : vector<8xi8> to vector<8xf8E8M0FNU>
+  %0 = arith.extf %x : vector<8xf8E8M0FNU> to vector<8xf32>
+  func.call @print_f32(%0) : (vector<8xf32>) -> ()
+  %1 = arith.extf %x : vector<8xf8E8M0FNU> to vector<8xbf16>
+  func.call @print_bf16(%1) : (vector<8xbf16>) -> ()
+  %2 = arith.extf %x : vector<8xf8E8M0FNU> to vector<8xf64>
+  func.call @print_f64(%2) : (vector<8xf64>) -> ()
+  return
+}
+
 func.func @extf_f4E2M1FN_to_narrow(%codes : vector<16xi8>) {
   %narrow = arith.trunci %codes : vector<16xi8> to vector<16xi4>
   %x = arith.bitcast %narrow : vector<16xi4> to vector<16xf4E2M1FN>
@@ -1039,7 +1050,7 @@ func.func @entry() {
   func.call @truncf_f16_to_f8E8M0FNU(%f16_to_f8E8M0FNU) : (vector<16xi16>) -> ()
 
   // extf from each format; each @extf_* prints the f32, f16, bf16 and f64
-  // results.
+  // results (@extf_f8E8M0FNU: f32, bf16 and f64).
 
   // f8E4M3FN: 2^-9, 7*2^-9, 2^-6, 448, -0, -1.125, NaN, -NaN.
   %from_f8E4M3FN = arith.constant dense<[
@@ -1130,6 +1141,16 @@ func.func @entry() {
   // CHECK-NEXT: ( 16128, 16256, 16448, 16576, 49344, 32768, 48896, 49280 )
   // CHECK-NEXT: ( 4602678819172646912, 4607182418800017408, 4613937818241073152, 4618441417868443648, 13841813454723219456, 9223372036854775808, 13826050856027422720, 13839561654909534208 )
   func.call @extf_f4E2M1FN(%from_f4E2M1FN) : (vector<8xi8>) -> ()
+
+  // f8E8M0FNU: code c is 2^(c - 127): 2^-127 (an f32 and bf16 subnormal),
+  // 2^-126, 2^-125, 1, 2, 2^65, 2^127, NaN (f32, bf16 and f64 only: its f16
+  // result goes through an f32 to f16 truncf).
+  %from_f8E8M0FNU = arith.constant dense<[
+      0x00, 0x01, 0x02, 0x7F, 0x80, 0xC0, 0xFE, 0xFF]> : vector<8xi8>
+  // CHECK-NEXT: ( 4194304, 8388608, 16777216, 1065353216, 1073741824, 1610612736, 2130706432, 2143289344 )
+  // CHECK-NEXT: ( 64, 128, 256, 16256, 16384, 24576, 32512, 32704 )
+  // CHECK-NEXT: ( 4035225266123964416, 4039728865751334912, 4044232465378705408, 4607182418800017408, 4611686018427387904, 4899916394579099648, 5179139571476070400, 9221120237041090560 )
+  func.call @extf_f8E8M0FNU(%from_f8E8M0FNU) : (vector<8xi8>) -> ()
 
   // f4E2M1FN -> f6E2M3FN, f6E3M2FN, f8E4M3FN, f8E5M2 (exact),
   // every code.
