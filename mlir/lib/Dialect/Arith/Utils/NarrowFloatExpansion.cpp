@@ -134,6 +134,12 @@ mlir::arith::floatFormatSpecFromFloatType(FloatType floatTy) {
   return floatFormatSpecFromSemantics(floatTy.getFloatSemantics());
 }
 
+bool mlir::arith::haveSameExponentLayout(const FloatFormatSpec &a,
+                                         const FloatFormatSpec &b) {
+  return a.hasInf && b.hasInf && a.isSigned && b.isSigned &&
+         a.expBits == b.expBits && a.bias == b.bias;
+}
+
 // The truncation rounds once. With sm / dm the mantissa bits, minNormalExp =
 // srcBias - dstBias + 1 and zeroExp = minNormalExp - dm - 2, a source with
 // exponent field e and significand sig (implicit bit included) gives
@@ -242,36 +248,48 @@ Value mlir::arith::emitNarrowFloatTrunc(ImplicitLocOpBuilder &b, Value srcBits,
 
   Value mag =
       bb.andi(srcBits, bb.carrierConst(lowBitsMask(src.sizeInBits - 1)));
-  Value exp = bb.lshri(mag, srcMantBits);
-
-  // The implicit bit must be exact only if a subnormal can round to nonzero.
-  const bool dynImplicit = directed || zeroExp <= 0;
-  Value implicit = dynImplicit ? bb.shli(bb.minui(exp, getOne()), srcMantBits)
-                               : bb.carrierConst(bitAt(srcMantBits));
-  Value mantissa = bb.andi(mag, bb.carrierConst(lowBitsMask(srcMantBits)));
-  Value sig = bb.ori(mantissa, implicit);
-
-  Value hi, shift;
-  if (zeroExp <= 0) {
-    // A subnormal has exponent 1 and no implicit bit; e1 >= 1 > zeroExp.
-    Value ee = bb.maxui(exp, getOne());
-    Value e1 = bb.minui(ee, bb.carrierConst(minNormalExp));
-    hi = bb.subi(ee, e1);
-    shift = zeroExp == 0 ? e1 : bb.subi(e1, bb.carrierConst(zeroExp));
+  const bool sameLayout = haveSameExponentLayout(src, dst);
+  Value code;
+  // Same exponent layout: the magnitude rounded at bit sm - dm is the code, a
+  // carry past max-finite giving Inf exactly where IEEE overflow does.
+  if (sameLayout) {
+    assert(dstMantBits < srcMantBits && "the destination must be narrower");
+    code = roundAt(mag, srcMantBits - dstMantBits);
   } else {
-    Value e1 = bb.minui(exp, bb.carrierConst(minNormalExp));
-    hi = bb.subi(exp, e1);
-    // smax equals umax here; LLVM miscompiled umax(x, c) - c on zero vectors.
-    Value clampedExp = bb.maxsi(e1, bb.carrierConst(zeroExp));
-    shift = bb.subi(clampedExp, bb.carrierConst(zeroExp));
+    Value exp = bb.lshri(mag, srcMantBits);
+
+    // The implicit bit must be exact only if a subnormal can round to nonzero.
+    const bool dynImplicit = directed || zeroExp <= 0;
+    Value implicit = dynImplicit ? bb.shli(bb.minui(exp, getOne()), srcMantBits)
+                                 : bb.carrierConst(bitAt(srcMantBits));
+    Value mantissa = bb.andi(mag, bb.carrierConst(lowBitsMask(srcMantBits)));
+    Value sig = bb.ori(mantissa, implicit);
+
+    Value hi, shift;
+    if (zeroExp <= 0) {
+      // A subnormal has exponent 1 and no implicit bit; e1 >= 1 > zeroExp.
+      Value ee = bb.maxui(exp, getOne());
+      Value e1 = bb.minui(ee, bb.carrierConst(minNormalExp));
+      hi = bb.subi(ee, e1);
+      shift = zeroExp == 0 ? e1 : bb.subi(e1, bb.carrierConst(zeroExp));
+    } else {
+      Value e1 = bb.minui(exp, bb.carrierConst(minNormalExp));
+      hi = bb.subi(exp, e1);
+      // smax equals umax here; LLVM miscompiled umax(x, c) - c on zero vectors.
+      Value clampedExp = bb.maxsi(e1, bb.carrierConst(zeroExp));
+      shift = bb.subi(clampedExp, bb.carrierConst(zeroExp));
+    }
+    Value v = bb.shli(sig, shift);
+    Value rounded = roundAt(v, roundShift);
+    code = bb.addi(rounded, bb.shli(hi, dstMantBits));
   }
-  Value v = bb.shli(sig, shift);
-  Value rounded = roundAt(v, roundShift);
-  Value code = bb.addi(rounded, bb.shli(hi, dstMantBits));
 
   // Resolve codes above maxFinite into `clamped` and, if set, `isNaNResult`.
   Value clamped, isNaNResult;
-  if (!dst.hasNaN()) {
+  if (sameLayout) {
+    clamped = code;
+    isNaNResult = bb.ugt(mag, bb.carrierConst(infBits));
+  } else if (!dst.hasNaN()) {
     clamped = bb.minui(code, getMaxFinite());
   } else if (dst.hasInf) {
     Value infBitsV = bb.carrierConst(infBits);
@@ -479,6 +497,16 @@ Value mlir::arith::emitNarrowFloatExt(ImplicitLocOpBuilder &b, Value srcBits,
   const unsigned magBits = src.expBits + ms;
 
   Value mag = bb.andi(srcBits, bb.carrierConst(lowBitsMask(magBits)));
+  // Same exponent layout: shift the code; or-ing quietNaNBits quiets a NaN.
+  if (haveSameExponentLayout(src, dst)) {
+    Value code = bb.andi(srcBits, bb.carrierConst(lowBitsMask(src.sizeInBits)));
+    Value res = bb.shli(code, md - ms);
+    Value isNaN =
+        bb.ugt(mag, bb.carrierConst(uint64_t(src.maxStoredExp) << ms));
+    Value quietNaN = bb.ori(res, bb.carrierConst(dst.quietNaNBits));
+    return bb.select(isNaN, quietNaN, res);
+  }
+
   SmallVector<ExtPiece, 6> table = buildExtPieceTable(src, dst, bb.width);
   auto linear = [&](const ExtPiece &q) -> Value {
     assert(q.mult != 0 && "a constant piece has no linear form");
