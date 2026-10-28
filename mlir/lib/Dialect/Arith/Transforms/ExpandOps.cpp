@@ -120,11 +120,16 @@ static bool canRoundFrom(FloatType src, FloatType dst) {
              64;
 }
 
-/// Returns the type emitNarrowFloatTrunc rounds from: `src`; else f32 reached
-/// exactly (extf from tf32 or f16, or a decode); or null.
+/// Returns the type emitNarrowFloatTrunc rounds from: `src`; f64 for f80 and
+/// f128 (see emitRoundToOddF64Bits); else f32 reached exactly (extf from tf32
+/// or f16, or a decode); or null.
 static FloatType getTruncSourceType(FloatType src, FloatType dst) {
   if (isEmitterWideType(src) && canRoundFrom(src, dst))
     return src;
+  if (isa<Float80Type, Float128Type>(src)) {
+    FloatType f64 = Float64Type::get(src.getContext());
+    return canRoundFrom(f64, dst) ? f64 : FloatType();
+  }
   FloatType f32 = Float32Type::get(src.getContext());
   if (!canRoundFrom(f32, dst))
     return FloatType();
@@ -190,8 +195,9 @@ static IntegerType getCarrierIntType(Builder &b,
 }
 
 /// Returns the op's nnan flag alone, or null: the only flag of the float ops
-/// created before the rounding. With contract, ExtFOp::fold would fold the
-/// widening of a contract truncf back to the truncf's operand.
+/// created before the rounding. The f64 value of an f128 can be Inf or -0
+/// where the f128 is neither (ninf, nsz), and with contract ExtFOp::fold would
+/// fold the widening of a contract truncf back to the truncf's operand.
 static arith::FastMathFlagsAttr getNNaNOnly(MLIRContext *ctx,
                                             arith::FastMathFlagsAttr fastmath) {
   if (fastmath && arith::bitEnumContainsAll(fastmath.getValue(),
@@ -200,8 +206,73 @@ static arith::FastMathFlagsAttr getNNaNOnly(MLIRContext *ctx,
   return {};
 }
 
+/// Returns the f64 bits of the f128 or f80 `operand` rounded to odd: toward
+/// zero, with the LSB set if inexact. f64 has at least two more bits than any
+/// precision p the emitter writes (53 >= p + 2) and a wider range, so rounding
+/// this value once more in any mode equals rounding `operand` directly. An f80
+/// is extended to f128 first (exact for canonical x87 encodings; a
+/// non-canonical one is read as the lowered arith.extf reads it). A NaN gives
+/// APFloat's f64 NaN; `nnan` (the op's nnan flag or null) drops that step.
+static Value emitRoundToOddF64Bits(ImplicitLocOpBuilder &b,
+                                   PatternRewriter &rewriter, Value operand,
+                                   arith::FastMathFlagsAttr nnan) {
+  Location loc = b.getLoc();
+  Type operandTy = operand.getType();
+  Type f128Ty = cloneToShapedType(operandTy, b.getF128Type());
+  Type i128Ty = cloneToShapedType(operandTy, b.getIntegerType(128));
+  Type f64Ty = cloneToShapedType(operandTy, b.getF64Type());
+  Type i64Ty = cloneToShapedType(operandTy, b.getI64Type());
+  Value x = operand;
+  if (operandTy != f128Ty)
+    x = arith::ExtFOp::create(b, f128Ty, operand, nnan);
+  Value r =
+      arith::TruncFOp::create(b, f64Ty, x, /*roundingmode=*/nullptr, nnan);
+  Value back = arith::ExtFOp::create(b, f128Ty, r, nnan);
+  // `back` has the sign of `x`, so their bits order by magnitude.
+  Value xBits = arith::BitcastOp::create(b, i128Ty, x);
+  Value backBits = arith::BitcastOp::create(b, i128Ty, back);
+  Value inexact =
+      arith::CmpIOp::create(b, arith::CmpIPredicate::ne, backBits, xBits);
+  Value roundedUp =
+      arith::CmpIOp::create(b, arith::CmpIPredicate::ugt, backBits, xBits);
+  // Stepping a rounded-up `r` down (an Inf to max-finite) truncates it.
+  Value bits = arith::BitcastOp::create(b, i64Ty, r);
+  Value up = arith::ExtUIOp::create(b, i64Ty, roundedUp);
+  Value truncated = arith::SubIOp::create(b, bits, up);
+  Value sticky = arith::ExtUIOp::create(b, i64Ty, inexact);
+  Value odd = arith::OrIOp::create(b, truncated, sticky);
+  if (nnan)
+    return odd;
+
+  // A NaN keeps its sign and the top 52 of its 112 payload bits, quieted.
+  Value c60 = createConst(loc, i128Ty, 60, rewriter);
+  Value shifted = arith::ShRUIOp::create(b, xBits, c60);
+  Value top = arith::TruncIOp::create(b, i64Ty, shifted);
+  Value payloadMask =
+      createAPIntConst(loc, i64Ty, APInt::getLowBitsSet(64, 52), rewriter);
+  Value payload = arith::AndIOp::create(b, top, payloadMask);
+  Value zero = createConst(loc, i128Ty, 0, rewriter);
+  Value isNegative =
+      arith::CmpIOp::create(b, arith::CmpIPredicate::slt, xBits, zero);
+  Value negQNaN =
+      createAPIntConst(loc, i64Ty, APInt(64, 0xFFF8000000000000), rewriter);
+  Value posQNaN =
+      createAPIntConst(loc, i64Ty, APInt(64, 0x7FF8000000000000), rewriter);
+  Value qNaN = arith::SelectOp::create(b, isNegative, negQNaN, posQNaN);
+  Value nanBits = arith::OrIOp::create(b, payload, qNaN);
+  Value absMask =
+      createAPIntConst(loc, i128Ty, APInt::getLowBitsSet(128, 127), rewriter);
+  Value mag = arith::AndIOp::create(b, xBits, absMask);
+  Value infBits =
+      createAPIntConst(loc, i128Ty, APInt(128, 0x7FFF).shl(112), rewriter);
+  Value isNaN =
+      arith::CmpIOp::create(b, arith::CmpIPredicate::ugt, mag, infBits);
+  return arith::SelectOp::create(b, isNaN, nanBits, odd);
+}
+
 /// Rounds `operand` once in `rnd` to `resultTy`'s narrow element type.
-static Value emitNarrowFloatRounding(ImplicitLocOpBuilder &b, Value operand,
+static Value emitNarrowFloatRounding(ImplicitLocOpBuilder &b,
+                                     PatternRewriter &rewriter, Value operand,
                                      Type resultTy, arith::RoundingMode rnd,
                                      arith::FastMathFlagsAttr fastmath) {
   Type operandTy = operand.getType();
@@ -226,6 +297,8 @@ static Value emitNarrowFloatRounding(ImplicitLocOpBuilder &b, Value operand,
     Value code = arith::BitcastOp::create(b, narrowBitsTy, operand);
     Value carried = arith::ExtUIOp::create(b, carrierTy, code);
     srcBits = arith::emitNarrowFloatExt(b, carried, narrow, wide);
+  } else if (isa<Float80Type, Float128Type>(srcETy)) {
+    srcBits = emitRoundToOddF64Bits(b, rewriter, operand, nnan);
   } else {
     Value wideValue = operand;
     if (srcETy != wideETy)
@@ -1048,7 +1121,7 @@ struct NarrowFloatTruncFOpConverter : public OpRewritePattern<arith::TruncFOp> {
     ImplicitLocOpBuilder b(op.getLoc(), rewriter);
     arith::RoundingMode rnd =
         op.getRoundingmode().value_or(arith::RoundingMode::to_nearest_even);
-    Value result = emitNarrowFloatRounding(b, operand, resultTy, rnd,
+    Value result = emitNarrowFloatRounding(b, rewriter, operand, resultTy, rnd,
                                            op.getFastmathAttr());
     rewriter.replaceOp(op, result);
     return success();
@@ -1076,7 +1149,7 @@ struct NarrowFloatExtFOpConverter : public OpRewritePattern<arith::ExtFOp> {
     Value result =
         isExactNarrowPair(cast<FloatType>(operandETy),
                           cast<FloatType>(resultETy))
-            ? emitNarrowFloatRounding(b, operand, resultTy,
+            ? emitNarrowFloatRounding(b, rewriter, operand, resultTy,
                                       arith::RoundingMode::to_nearest_even,
                                       op.getFastmathAttr())
             : emitNarrowFloatExtension(b, operand, resultTy,

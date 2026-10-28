@@ -287,14 +287,30 @@ func.func @ext_f6E2M3FN_no_zero_or_sign(%arg0: f6E2M3FN)
 
 // fastmath flags carry over to the float ops the expansion keeps, but those
 // before the rounding keep only nnan (with contract, ExtFOp::fold would fold
-// the widening of a contract truncf back to the truncf's operand), here the
-// exact widening of an f16 source into f8E5M2FNUZ.
+// the widening of a contract truncf back to the truncf's operand): the exact
+// widening of an f16 source into f8E5M2FNUZ, the extf of an f80, and the truncf
+// and extf that round an f128 to odd, where nnan also drops the NaN rebuild.
 // CHECK-LABEL: func.func @fastmath(
 // CHECK:         arith.extf %arg0 fastmath<nnan> : f16 to f32
+// CHECK:         %[[R:.*]] = arith.truncf %arg1 fastmath<nnan> : f128 to f64
+// CHECK-NEXT:    arith.extf %[[R]] fastmath<nnan> : f64 to f128
+// CHECK-NOT:     arith.constant 60 : i128
+// CHECK:         %[[W:.*]] = arith.extf %arg2 : f80 to f128
+// CHECK-NEXT:    %[[R2:.*]] = arith.truncf %[[W]] : f128 to f64
+// CHECK-NEXT:    arith.extf %[[R2]] : f64 to f128
+// CHECK:         arith.constant 60 : i128
 // KEPT:          arith.extf %arg0 fastmath<nnan> : f16 to f32
-func.func @fastmath(%arg0: f16) -> f8E5M2FNUZ {
+// KEPT:          arith.truncf %arg1 fastmath<nnan> : f128 to f64
+// KEPT:          arith.extf %{{.*}} fastmath<nnan> : f64 to f128
+// KEPT:          arith.extf %arg2 : f80 to f128
+// KEPT:          arith.truncf %{{.*}} : f128 to f64
+// KEPT:          arith.extf %{{.*}} : f64 to f128
+func.func @fastmath(%arg0: f16, %arg1: f128, %arg2: f80)
+    -> (f8E5M2FNUZ, f8E4M3, f8E4M3) {
   %0 = arith.truncf %arg0 fastmath<nnan,contract> : f16 to f8E5M2FNUZ
-  return %0 : f8E5M2FNUZ
+  %1 = arith.truncf %arg1 fastmath<nnan,contract> : f128 to f8E4M3
+  %2 = arith.truncf %arg2 fastmath<contract> : f80 to f8E4M3
+  return %0, %1, %2 : f8E5M2FNUZ, f8E4M3, f8E4M3
 }
 
 // Each option enables its own format and no other: the one expanded truncf is
@@ -429,6 +445,84 @@ func.func @wide_partners(%arg0: tf32, %arg1: f8E4M3, %arg2: vector<4xf6E2M3FN>,
   %2 = arith.extf %arg2 : vector<4xf6E2M3FN> to vector<4xf80>
   %3 = arith.extf %arg3 : f8E5M2FNUZ to tf32
   return %0, %1, %2, %3 : f8E4M3FNUZ, f128, vector<4xf80>, tf32
+}
+
+// A truncf from f128 is first rounded to odd into f64: the f64 truncf,
+// extended back, shows whether it was inexact (other bits) and rounded up
+// (larger bits, as the signs agree); a rounded-up result is stepped down and an
+// inexact one gets an odd LSB. A NaN is rebuilt from the f128 bits (sign, top
+// 52 payload bits, quiet NaN 0x7FF8000000000000); 2^127 - 1 masks the sign off
+// and 0x7FFF << 112 is the f128 Inf. The f64 expansion then rounds once
+// (9007199254740991 = 2^53 - 1, the f64 to_nearest_even addend).
+// CHECK-LABEL: func.func @trunc_f128_f8E4M3(
+// CHECK:         %[[R:.*]] = arith.truncf %arg0 : f128 to f64
+// CHECK-NEXT:    %[[BACK:.*]] = arith.extf %[[R]] : f64 to f128
+// CHECK-NEXT:    %[[X:.*]] = arith.bitcast %arg0 : f128 to i128
+// CHECK-NEXT:    %[[B:.*]] = arith.bitcast %[[BACK]] : f128 to i128
+// CHECK-NEXT:    %[[INEXACT:.*]] = arith.cmpi ne, %[[B]], %[[X]] : i128
+// CHECK-NEXT:    %[[UP:.*]] = arith.cmpi ugt, %[[B]], %[[X]] : i128
+// CHECK-NEXT:    %[[BITS:.*]] = arith.bitcast %[[R]] : f64 to i64
+// CHECK-NEXT:    %[[UP64:.*]] = arith.extui %[[UP]] : i1 to i64
+// CHECK-NEXT:    %[[TZ:.*]] = arith.subi %[[BITS]], %[[UP64]] : i64
+// CHECK-NEXT:    %[[STICKY:.*]] = arith.extui %[[INEXACT]] : i1 to i64
+// CHECK-NEXT:    %[[ODD:.*]] = arith.ori %[[TZ]], %[[STICKY]] : i64
+// CHECK-NEXT:    %[[C60:.*]] = arith.constant 60 : i128
+// CHECK-NEXT:    %[[SH:.*]] = arith.shrui %[[X]], %[[C60]] : i128
+// CHECK-NEXT:    %[[TOP:.*]] = arith.trunci %[[SH]] : i128 to i64
+// CHECK-NEXT:    %[[PMASK:.*]] = arith.constant 4503599627370495 : i64
+// CHECK-NEXT:    %[[PAYLOAD:.*]] = arith.andi %[[TOP]], %[[PMASK]] : i64
+// CHECK-NEXT:    %[[ZERO:.*]] = arith.constant 0 : i128
+// CHECK-NEXT:    %[[NEG:.*]] = arith.cmpi slt, %[[X]], %[[ZERO]] : i128
+// CHECK-NEXT:    %[[NQ:.*]] = arith.constant -2251799813685248 : i64
+// CHECK-NEXT:    %[[PQ:.*]] = arith.constant 9221120237041090560 : i64
+// CHECK-NEXT:    %[[Q:.*]] = arith.select %[[NEG]], %[[NQ]], %[[PQ]] : i64
+// CHECK-NEXT:    %[[NAN:.*]] = arith.ori %[[PAYLOAD]], %[[Q]] : i64
+// CHECK-NEXT:    %[[AMASK:.*]] = arith.constant 170141183460469231731687303715884105727 : i128
+// CHECK-NEXT:    %[[MAG:.*]] = arith.andi %[[X]], %[[AMASK]] : i128
+// CHECK-NEXT:    %[[INF:.*]] = arith.constant 170135991163610696904058773219554885632 : i128
+// CHECK-NEXT:    %[[ISNAN:.*]] = arith.cmpi ugt, %[[MAG]], %[[INF]] : i128
+// CHECK-NEXT:    %[[SRC:.*]] = arith.select %[[ISNAN]], %[[NAN]], %[[ODD]] : i64
+// CHECK-NEXT:    %[[M:.*]] = arith.constant 9223372036854775807 : i64
+// CHECK-NEXT:    arith.andi %[[SRC]], %[[M]] : i64
+// CHECK:         arith.constant 9007199254740991 : i64
+// CHECK:         %[[CODE:.*]] = arith.trunci %{{.*}} : i64 to i8
+// CHECK-NEXT:    arith.bitcast %[[CODE]] : i8 to f8E4M3
+// KEPT:          arith.truncf %arg0 : f128 to f64
+// KEPT:          arith.extf %{{.*}} : f64 to f128
+// OFF:           arith.truncf %arg0 : f128 to f8E4M3
+func.func @trunc_f128_f8E4M3(%arg0: f128) -> f8E4M3 {
+  %0 = arith.truncf %arg0 : f128 to f8E4M3
+  return %0 : f8E4M3
+}
+
+// An f80 source is extended exactly to f128 first; upward then rounds the f64
+// magnitude up for x >= 0 (2^54 - 1). A vector takes the same ops.
+// CHECK-LABEL: func.func @trunc_wide_sources(
+// CHECK:         %[[W:.*]] = arith.extf %arg0 : f80 to f128
+// CHECK-NEXT:    %[[R:.*]] = arith.truncf %[[W]] : f128 to f64
+// CHECK-NEXT:    arith.extf %[[R]] : f64 to f128
+// CHECK:         arith.cmpi ugt, %{{.*}}, %{{.*}} : i128
+// CHECK:         arith.cmpi ugt, %{{.*}}, %{{.*}} : i128
+// CHECK-NEXT:    %[[SRC:.*]] = arith.select %{{.*}}, %{{.*}}, %{{.*}} : i64
+// CHECK-NEXT:    %[[Z:.*]] = arith.constant 0 : i64
+// CHECK-NEXT:    arith.cmpi sge, %[[SRC]], %[[Z]] : i64
+// CHECK:         arith.constant 18014398509481983 : i64
+// CHECK:         %[[CODE:.*]] = arith.trunci %{{.*}} : i64 to i8
+// CHECK-NEXT:    arith.bitcast %[[CODE]] : i8 to f8E4M3FNUZ
+// CHECK:         arith.truncf %arg1 : vector<4xf128> to vector<4xf64>
+// CHECK:         arith.constant dense<60> : vector<4xi128>
+// CHECK:         arith.trunci %{{.*}} : vector<4xi64> to vector<4xi6>
+// CHECK-NEXT:    arith.bitcast %{{.*}} : vector<4xi6> to vector<4xf6E3M2FN>
+// KEPT:          arith.extf %arg0 : f80 to f128
+// KEPT:          arith.truncf %{{.*}} : f128 to f64
+// KEPT:          arith.extf %{{.*}} : f64 to f128
+// KEPT:          arith.truncf %arg1 : vector<4xf128> to vector<4xf64>
+// KEPT:          arith.extf %{{.*}} : vector<4xf64> to vector<4xf128>
+func.func @trunc_wide_sources(%arg0: f80, %arg1: vector<4xf128>)
+    -> (f8E4M3FNUZ, vector<4xf6E3M2FN>) {
+  %0 = arith.truncf %arg0 upward : f80 to f8E4M3FNUZ
+  %1 = arith.truncf %arg1 toward_zero : vector<4xf128> to vector<4xf6E3M2FN>
+  return %0, %1 : f8E4M3FNUZ, vector<4xf6E3M2FN>
 }
 
 // Left alone: dynamic shapes (no splat constant), f8E8M0FNU (only
