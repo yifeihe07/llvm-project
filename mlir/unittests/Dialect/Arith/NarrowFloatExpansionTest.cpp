@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 //
 // Checks the FloatFormatSpecs against APFloat, and the folded expansion (greedy
-// driver, public populate functions) against APFloat::convert, from bf16 and
-// f32.
+// driver, public populate functions) against APFloat::convert, from bf16, f32,
+// f80 and f128.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +19,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/StringExtras.h"
@@ -165,6 +166,32 @@ TEST(FloatFormatSpecTest, EncodingsMatchAPFloat) {
   }
 }
 
+/// Folds a constant extf, or truncf without a rounding mode, into f64 or f128,
+/// rounding to nearest even like the runtime conversion. TruncFOp::fold folds
+/// only exact conversions, but the f80 and f128 expansion rounds through f64.
+template <typename OpTy>
+struct FoldWideConversion : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    auto trunc = dyn_cast<arith::TruncFOp>(op.getOperation());
+    if (trunc && trunc.getRoundingmodeAttr())
+      return failure();
+    auto type = dyn_cast<FloatType>(op.getType());
+    FloatAttr in;
+    if (!type || !(type.isF64() || type.isF128()) ||
+        !matchPattern(op.getIn(), m_Constant(&in)))
+      return failure();
+    APFloat value = in.getValue();
+    bool losesInfo = false;
+    (void)value.convert(type.getFloatSemantics(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(op,
+                                                   FloatAttr::get(type, value));
+    return success();
+  }
+};
+
 /// Expands `arith.truncf` of the `srcTy` constant `srcBits` to `dstTy` in `rnd`
 /// (if set) with `populate`'s patterns (greedy driver, no folding), then folds.
 /// Returns the folded bits, or std::nullopt if the truncf survived or did not
@@ -196,7 +223,10 @@ expandThenFold(MLIRContext &ctx, FloatType srcTy, const APInt &srcBits,
   if (llvm::any_of(func.getBody().getOps<arith::TruncFOp>(),
                    [&](arith::TruncFOp op) { return op.getType() == dstTy; }))
     return std::nullopt;
-  if (failed(applyPatternsGreedily(func, RewritePatternSet(&ctx))))
+  RewritePatternSet folds(&ctx);
+  folds.add<FoldWideConversion<arith::TruncFOp>,
+            FoldWideConversion<arith::ExtFOp>>(&ctx);
+  if (failed(applyPatternsGreedily(func, std::move(folds))))
     return std::nullopt;
   Value result = func.getBody().front().getTerminator()->getOperand(0);
   auto folded = result.getDefiningOp<arith::ConstantOp>();
@@ -323,6 +353,84 @@ TEST(NarrowFloatExpansionTest, SignedFoldedValuesMatchAPFloat) {
   };
   expectFoldedMatchesAPFloat(ctx, Float8E4M3FNType::get(&ctx), inputs,
                              populate);
+}
+
+// A truncf from f128 or f80 rounds to odd into f64 first. The inputs are ones
+// that rounding to nearest through f64 would round twice: a tie or a value of a
+// destination plus or minus less than half an f64 ulp, a sticky bit past f64's
+// precision, values above f64's max-finite and below its subnormals; also +-0,
+// +-Inf and NaNs of each sign, quiet and signaling. Pairs are {high, low}.
+TEST(NarrowFloatExpansionTest, WideSourceFoldedValuesMatchAPFloat) {
+  MLIRContext ctx;
+  ctx.loadDialect<arith::ArithDialect, func::FuncDialect>();
+  const std::pair<uint64_t, uint64_t> f128Inputs[] = {
+      {0x3FFF100000000000, 0x0000040000000000}, // 1.0625 + 2^-70
+      {0x3FFF0FFFFFFFFFFF, 0xFFFFFC0000000000}, // 1.0625 - 2^-70
+      {0xBFFF100000000000, 0x0000040000000000}, // -(1.0625 + 2^-70)
+      {0x3FFF200000000000, 0x0000040000000000}, // 1.125 + 2^-70
+      {0xBFFF1FFFFFFFFFFF, 0xFFFFFC0000000000}, // -(1.125 - 2^-70)
+      {0x3FFF400000000000, 0x0000040000000000}, // 1.25 + 2^-70
+      {0x3FFF3FFFFFFFFFFF, 0xFFFFFC0000000000}, // 1.25 - 2^-70
+      {0x3FFF000000000000, 0x0000040000000000}, // 1 + 2^-70
+      {0xBFFF000000000000, 0x0000040000000000}, // -(1 + 2^-70)
+      {0x4001400000000000, 0x0000040000000000}, // 5 + 2^-68
+      {0xC0013FFFFFFFFFFF, 0xFFFFFC0000000000}, // -(5 - 2^-68)
+      {0x3FFF200000000000, 0x0000000000000001}, // 1.125 + 2^-112
+      {0x3FFD000000000000, 0x0000000400000000}, // 0.25 + 2^-80
+      {0x3FEE000000000000, 0x0000008000000000}, // 2^-17 + 2^-90
+      {0xBFF4FFFFFFFFFFFF, 0xFFFFFFFE00000000}, // -(2^-10 - 2^-90)
+      {0x4007D00000000000, 0x0000100000000000}, // 464 + 2^-60
+      {0xC00EDFFFFFFFFFFF, 0xFFFFFF8000000000}, // -(61440 - 2^-58)
+      {0x444B000000000000, 0x0000000000000000}, // 2^1100
+      {0xC44B000000000000, 0x0000000000000000}, // -2^1100
+      {0x43FEFFFFFFFFFFFF, 0xF400000000000000}, // f64 max + 2^969
+      {0x43FEFFFFFFFFFFFF, 0xF800000000000200}, // f64 max + 2^970 + 2^920
+      {0x3BB4000000000000, 0x0000000000000000}, // 2^-1099
+      {0xBBB4000000000000, 0x0000000000000000}, // -2^-1099
+      {0x0000000000000000, 0x0000000000000000}, // +0
+      {0x8000000000000000, 0x0000000000000000}, // -0
+      {0x7FFF000000000000, 0x0000000000000000}, // +Inf
+      {0xFFFF000000000000, 0x0000000000000000}, // -Inf
+      {0x7FFF800000000000, 0x0000000000000123}, // quiet NaN
+      {0xFFFFE00000000000, 0x0000000000000000}, // -quiet NaN
+      {0x7FFF400000000000, 0x0000000000000000}, // signaling NaN
+      {0xFFFF000000000000, 0x0000000000000001}, // -signaling NaN
+  };
+  // The high 16 bits are sign and exponent; the low 64 the significand.
+  const std::pair<uint64_t, uint64_t> f80Inputs[] = {
+      {0x3FFF, 0x8800000000000001}, // 1.0625 + 2^-63
+      {0xBFFF, 0x9000000000000001}, // -(1.125 + 2^-63)
+      {0x3FFF, 0x9FFFFFFFFFFFFFFF}, // 1.25 - 2^-63
+      {0x4007, 0xE800000000000001}, // 464 + 2^-55
+      {0x7E7F, 0x8000000000000000}, // 2^16000
+      {0x817F, 0x8000000000000000}, // -2^-16000
+      {0x0000, 0x0000000000000001}, // 2^-16445
+      {0x0000, 0x0000000000000000}, // +0
+      {0x8000, 0x0000000000000000}, // -0
+      {0x7FFF, 0x8000000000000000}, // +Inf
+      {0x7FFF, 0xC000000000000123}, // quiet NaN
+      {0xFFFF, 0xA000000000000000}, // -signaling NaN
+  };
+  SmallVector<APInt> f128Bits, f80Bits;
+  for (auto [high, low] : f128Inputs)
+    f128Bits.push_back(APInt(128, {low, high}));
+  for (auto [high, low] : f80Inputs)
+    f80Bits.push_back(APInt(80, {low, high}));
+  const TypeID types[] = {
+      TypeID::get<Float8E5M2Type>(), TypeID::get<Float8E4M3FNType>(),
+      TypeID::get<Float4E2M1FNType>(), TypeID::get<Float8E5M2FNUZType>()};
+  auto populate = [&](RewritePatternSet &p) {
+    arith::populateExpandNarrowFloatPatterns(p, types);
+  };
+  for (FloatType dstTy : {FloatType(Float8E5M2Type::get(&ctx)),
+                          FloatType(Float8E4M3FNType::get(&ctx)),
+                          FloatType(Float4E2M1FNType::get(&ctx)),
+                          FloatType(Float8E5M2FNUZType::get(&ctx))}) {
+    expectFoldedMatchesAPFloat(ctx, Float128Type::get(&ctx), f128Bits, dstTy,
+                               populate);
+    expectFoldedMatchesAPFloat(ctx, Float80Type::get(&ctx), f80Bits, dstTy,
+                               populate);
+  }
 }
 
 #if GTEST_HAS_DEATH_TEST && !defined(NDEBUG)

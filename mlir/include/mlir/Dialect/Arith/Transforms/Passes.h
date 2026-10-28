@@ -60,9 +60,10 @@ void populateExpandBFloat16Patterns(RewritePatternSet &patterns);
 /// types in `narrowTypes` (at most 8 bits, with a zero and subnormals; others
 /// are ignored) into integer arith ops plus, for some pairs, arith.extf or
 /// arith.truncf bridges. Results are APFloat::convert's in the op's rounding
-/// mode, rounded once; a format without Inf and NaN saturates (NaN gives
-/// +max-finite), and an unsigned destination gets the input rounded with its
-/// sign, the sign then dropped. Dynamic shapes are left alone.
+/// mode, rounded once (from f80 or f128 via f64 rounded to odd); a format
+/// without Inf and NaN saturates (NaN gives +max-finite), and an unsigned
+/// destination gets the input rounded with its sign, the sign then dropped.
+/// Dynamic shapes are left alone.
 void populateExpandNarrowFloatPatterns(RewritePatternSet &patterns,
                                        ArrayRef<TypeID> narrowTypes);
 
